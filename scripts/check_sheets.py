@@ -964,11 +964,56 @@ def test_audit_prediction_result():
     return 6
 
 
+def audit_prediction_result_batch(snapshots, existing):
+    """Report review coverage per horse in the existing result-analysis ledger."""
+    from collections import Counter, defaultdict
+
+    recorded = defaultdict(set)
+    for row in existing:
+        if row.get("レースID") and row.get("馬番"):
+            recorded[row["レースID"]].add(str(row["馬番"]).strip())
+    counts, reports = Counter(), {}
+    for data in snapshots:
+        key = data["race_id"]
+        if not key or key in reports:
+            raise ValueError("Missing or duplicate review race ID")
+        report = audit_prediction_result(key, data["start_at"], data["expected_count"],
+                                         data["prediction_rows"], data["result_rows"])
+        if report["state"] == "CHECKED":
+            marks = [str(mark["number"]) for mark in report["marks"]]
+            report["existing_review_count"] = sum(number in recorded[key] for number in marks)
+            report["missing_review_numbers"] = [int(number) for number in marks if number not in recorded[key]]
+        counts[report["state"]] += 1
+        reports[key] = report
+    return {"counts": dict(counts), "reports": reports}
+
+
+def test_audit_prediction_result_batch():
+    key = "2026-11-28-KYOTO-11"
+    item = {"race_id": key, "start_at": "2026-11-28 15:40 JST", "expected_count": 3,
+            "prediction_rows": [{"レースID": key, "分析日時": "2026-11-28 14:00 JST",
+                                 "馬番": "1", "馬名": "馬1", "印": "◎"},
+                                {"レースID": key, "分析日時": "2026-11-28 14:00 JST",
+                                 "馬番": "2", "馬名": "馬2", "印": "○"}],
+            "result_rows": [{"レースID": key, "馬番": str(n), "馬名": f"馬{n}", "着順": str(n)}
+                            for n in range(1, 4)]}
+    report = audit_prediction_result_batch([item], [{"レースID": key, "馬番": "1"}])
+    assert report["counts"] == {"CHECKED": 1}
+    assert report["reports"][key]["existing_review_count"] == 1
+    assert report["reports"][key]["missing_review_numbers"] == [2]
+    waiting = audit_prediction_result_batch([dict(item, result_rows=[])], [])
+    assert waiting["counts"] == {"HOLD_RESULT_MISSING": 1}
+    return 4
+
+
 def audit_prediction_result_file(path):
     with open(path, encoding="utf-8") as stream:
         data = json.load(stream)
-    report = audit_prediction_result(data["race_id"], data["start_at"], data["expected_count"],
-                                     data["prediction_rows"], data["result_rows"])
+    if "snapshots" in data:
+        report = audit_prediction_result_batch(data["snapshots"], data.get("existing", []))
+    else:
+        report = audit_prediction_result(data["race_id"], data["start_at"], data["expected_count"],
+                                         data["prediction_rows"], data["result_rows"])
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
@@ -977,6 +1022,7 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--self-test"]:
         self_test()
         print("prediction result cases:", test_audit_prediction_result())
+        print("prediction batch cases:", test_audit_prediction_result_batch())
         print("corner study cases:", test_corner_position_study())
         print("prediction timestamp cases:", test_prediction_time_check())
         print("prediction identity cases:", test_prediction_identity_check())
