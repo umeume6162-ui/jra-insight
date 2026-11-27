@@ -20,12 +20,14 @@ on:
       - 'scripts/jra_result.py'
       - 'scripts/save_result.py'
       - '.github/workflows/check-sheets.yml'
+      - 'prediction-audit.html'
   pull_request:
     paths:
       - 'scripts/check_sheets.py'
       - 'scripts/jra_result.py'
       - 'scripts/save_result.py'
       - '.github/workflows/check-sheets.yml'
+      - 'prediction-audit.html'
 permissions:
   contents: read
 concurrency:
@@ -43,6 +45,17 @@ jobs:
       - run: pip install google-auth requests lxml
       - run: python -m py_compile scripts/check_sheets.py scripts/jra_result.py scripts/save_result.py
       - run: python scripts/check_sheets.py --self-test
+      - name: Check prediction audit page JavaScript
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+          page = Path("prediction-audit.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
+          assert len(scripts) == 1
+          subprocess.run(["node", "--check"], input=scripts[0], text=True, check=True)
+          PY
       - name: Reconcile one saved result with JRA
         if: >-
           github.event_name == 'push' && github.ref == 'refs/heads/main' &&
