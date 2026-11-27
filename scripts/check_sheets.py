@@ -726,15 +726,32 @@ def test_jra_profile_id():
 
 
 def audit_past_form_file(path):
-    """Read a local export of a verified roster and the existing form ledger."""
+    """Read a local export of one or more verified rosters and saved form ledgers."""
     with open(path, encoding="utf-8") as stream:
-        snapshot = json.load(stream)
-    report = jra_past_form_audit(
-        snapshot["race_id"], snapshot["race_day"], snapshot["roster"],
-        snapshot["expected_count"], snapshot["form_rows"],
-        snapshot["predicted_at"], snapshot["start_at"],
-    )
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+        data = json.load(stream)
+
+    def audit(snapshot):
+        return jra_past_form_audit(
+            snapshot["race_id"], snapshot["race_day"], snapshot["roster"],
+            snapshot["expected_count"], snapshot["form_rows"],
+            snapshot["predicted_at"], snapshot["start_at"],
+        )
+
+    if "snapshots" in data:
+        snapshots = data["snapshots"]
+        if not isinstance(snapshots, list) or not snapshots:
+            raise ValueError("Expected a nonempty snapshots list")
+        reports = {}
+        for snapshot in snapshots:
+            key = snapshot["race_id"]
+            if (not re.fullmatch(r"\d{4}-\d{2}-\d{2}-[A-Z]+-(?:0[1-9]|1[0-2])", key)
+                    or key[:10] != snapshot["race_day"] or key in reports):
+                raise ValueError("Invalid or duplicate audit race ID")
+            reports[key] = audit(snapshot)
+        output = {"schema": "jra-prediction-audit-list-v1", "reports": reports}
+    else:
+        output = audit(data)
+    print(json.dumps(output, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
