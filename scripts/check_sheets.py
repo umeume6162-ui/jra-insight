@@ -554,6 +554,12 @@ def jra_past_form_audit(race_id, race_day, roster, expected_count, form_rows, pr
     if type(expected_count) is not int or not 1 <= expected_count <= 18 or len(roster) != expected_count:
         return {"state": "HOLD_INCOMPLETE_ROSTER", "entrants": {},
                 "trainingAllowed": False, "publicationAllowed": False}
+    numbers = [row.get("entrant_number") for row in roster]
+    if (any(type(number) is not int or not 1 <= number <= 18 for number in numbers)
+            or len(set(numbers)) != expected_count
+            or any(row.get("race_id") != race_id for row in roster)):
+        return {"state": "HOLD_IDENTITY_MISMATCH", "entrants": {},
+                "trainingAllowed": False, "publicationAllowed": False}
     unknown_ids = [row["entrant_number"] for row in roster
                    if not isinstance(row.get("entrant_id"), str)
                    or not re.fullmatch(r"[0-9]{10}", row["entrant_id"])]
@@ -635,8 +641,16 @@ def jra_past_form_audit(race_id, race_day, roster, expected_count, form_rows, pr
     report = prediction_race_coverage(race_id, known, observations, ["past_form"], prediction, start)
     if unknown_ids:
         report["state"] = "HOLD_UNKNOWN_IDENTITY"
+    review = {
+        "verifyHorseId": sorted(unknown_ids),
+        "missingLedgerRows": sorted(number for number, evidence in form_evidence.items()
+                                    if not evidence["ledgerRows"]),
+        "reviewHeldForm": sorted(number for number, evidence in form_evidence.items()
+                                 if evidence["ledgerRows"] and not evidence["eligibleDays"]),
+    }
     return dict(report, rosterCount=expected_count, missingIds=unknown_ids,
-                formCounts=form_counts, conflictingFormDays=conflicting_days, formEvidence=form_evidence)
+                formCounts=form_counts, conflictingFormDays=conflicting_days,
+                formEvidence=form_evidence, review=review)
 
 
 def test_jra_past_form_audit():
@@ -667,7 +681,13 @@ def test_jra_past_form_audit():
     unknown_time = row[:5] + ["2026-11-27"]
     assert audit([unknown_time])["formEvidence"][1]["heldRows"] == {"HOLD_UNKNOWN_OR_INVALID_CAPTURE": 1}
     assert audit([row], cutoff="2026-11-27 20:00 JST")["formEvidence"][1]["heldRows"] == {"HOLD_AFTER_PREDICTION": 1}
-    return 12
+    assert audit([])["review"]["missingLedgerRows"] == [1]
+    assert audit([unknown_time])["review"]["reviewHeldForm"] == [1]
+    assert partial["review"]["verifyHorseId"] == [2]
+    duplicate = [roster[0], dict(roster[0], entrant_id=None)]
+    assert jra_past_form_audit(race_id, "2026-11-29", duplicate, 2, [headers, row],
+                               "2026-11-29 15:00 JST", "2026-11-29 15:40 JST")["state"] == "HOLD_IDENTITY_MISMATCH"
+    return 16
 
 
 def jra_profile_id(profile_url, card_name, profile_name):
