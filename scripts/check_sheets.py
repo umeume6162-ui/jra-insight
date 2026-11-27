@@ -189,18 +189,24 @@ def verify_saved_result(races, runners, fetch_candidate):
     return {"verified_saved_races": 1, "runner_rows": plan["runner_rows"], "writes": 0}
 
 
-def main(candidate_path=None, source_url=None, expected_key=None, verify_saved=False):
+def main(candidate_path=None, source_url=None, expected_key=None, verify_saved=False, write=False):
     from google.oauth2 import service_account
     from google.auth.transport.requests import AuthorizedSession
+    from requests import RequestException
     if not all(os.environ.get(x) for x in ("GOOGLE_SERVICE_ACCOUNT_JSON", "JRA_SHEET_ID")):
         raise SystemExit("Required repository secrets missing")
+    if write and not (source_url and expected_key):
+        raise ValueError("Writing requires an official result URL and the expected race ID")
+    scope = "https://www.googleapis.com/auth/spreadsheets"
     credentials = service_account.Credentials.from_service_account_info(
         json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
-        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"])
+        scopes=[scope if write else scope + ".readonly"])
     session = AuthorizedSession(credentials)
     base = "https://sheets.googleapis.com/v4/spreadsheets/" + os.environ["JRA_SHEET_ID"]
     def read(a1):
-        response = session.get(base + "/values/" + quote(a1, safe=""), timeout=30)
+        response = session.get(base + "/values/" + quote(a1, safe=""),
+                               params={"valueRenderOption": "UNFORMATTED_VALUE"} if write else None,
+                               timeout=30)
         if response.status_code != 200:
             raise SystemExit(f"Sheets read failed: HTTP {response.status_code}")
         return response.json().get("values", [])
@@ -208,8 +214,36 @@ def main(candidate_path=None, source_url=None, expected_key=None, verify_saved=F
     for tab in ("全レース台帳", "全出走馬成績"):
         if read(f"'{tab}'!A1:A1") != [["レースID"]]:
             raise SystemExit("Ledger header check failed")
-    races = read("'全レース台帳'!A:Z")
-    runners = read("'全出走馬成績'!A:AA")
+    def read_ledgers():
+        return read("'全レース台帳'!A:Z"), read("'全出走馬成績'!A:AA")
+
+    races, runners = read_ledgers()
+    if write:
+        from jra_result import candidate_from_url
+        from save_result import RACE_TAB, RUNNERS_TAB, save_result
+
+        candidate = candidate_from_url(source_url, expected_key, races[0], runners[0])
+        race = dict(zip(races[0], candidate["race"]))
+        if race["開催日"] >= race["取得日"]:
+            raise ValueError("Writes are limited to dates before the current JRA day")
+        race["検証状態"] = race["検証状態"].replace("掲載全頭候補", "掲載全頭確認・公式馬ID")
+        candidate["race"] = [race[field] for field in races[0]]
+        response = session.get(base, params={"fields": "sheets.properties(sheetId,title)"}, timeout=30)
+        if response.status_code != 200:
+            raise SystemExit(f"Sheets metadata read failed: HTTP {response.status_code}")
+        sheet_ids = {p["title"]: p["sheetId"] for item in response.json()["sheets"]
+                     if (p := item["properties"])["title"] in {RACE_TAB, RUNNERS_TAB}}
+
+        def append(requests):
+            try:
+                response = session.post(base + ":batchUpdate", json={"requests": requests}, timeout=30)
+            except RequestException:
+                raise SystemExit("Sheets write response missing. Re-read both ledgers before retrying.") from None
+            if response.status_code != 200:
+                raise SystemExit(f"Sheets write returned HTTP {response.status_code}. Re-read both ledgers before retrying.")
+
+        print(json.dumps(save_result(candidate, read_ledgers, sheet_ids, append), sort_keys=True))
+        return
     if verify_saved:
         from jra_result import candidate_from_url
         print(json.dumps(verify_saved_result(races, runners, candidate_from_url), sort_keys=True))
@@ -239,10 +273,12 @@ if __name__ == "__main__":
         main(sys.argv[2])
     elif len(sys.argv) == 4 and sys.argv[1] == "--official-result":
         main(source_url=sys.argv[2], expected_key=sys.argv[3])
+    elif len(sys.argv) == 4 and sys.argv[1] == "--save-official-result":
+        main(source_url=sys.argv[2], expected_key=sys.argv[3], write=True)
     elif sys.argv[1:] == ["--verify-saved-result"]:
         main(verify_saved=True)
     elif len(sys.argv) == 1:
         main()
     else:
-        raise SystemExit("Usage: check_sheets.py [--self-test | --candidate FILE | --official-result URL RACE_ID | --verify-saved-result]")
+        raise SystemExit("Usage: check_sheets.py [--self-test | --candidate FILE | --official-result URL RACE_ID | --save-official-result URL RACE_ID | --verify-saved-result]")
 
