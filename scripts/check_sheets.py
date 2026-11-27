@@ -21,9 +21,10 @@ def audit_ledgers(races, runners):
     def cell(row, i):
         return str(row[i]).strip() if i < len(row) else ""
     ri, ni = index(races, ("レースID", "頭数"))
-    hi, bi = index(runners, ("レースID", "馬番"))
+    hi, bi, fi = index(runners, ("レースID", "馬番", "着順"))
     race_counts, horse_counts, keys = Counter(), Counter(), Counter()
     expected = {}
+    nonstarters = Counter()
     invalid = 0
     for row in races[1:]:
         if not any(row):
@@ -43,13 +44,15 @@ def audit_ledgers(races, runners):
             continue
         keys[key, int(number)] += 1
         horse_counts[key] += 1
+        if cell(row, fi) in ("取消", "除外", "出走取消", "競走除外"):
+            nonstarters[key] += 1
     return {
         "races": len(race_counts),
         "runner_rows": sum(horse_counts.values()),
         "duplicate_race_rows": sum(n-1 for n in race_counts.values()),
         "duplicate_runner_rows": sum(n-1 for n in keys.values()),
         "orphan_runner_rows": sum(n for k,n in horse_counts.items() if k not in expected),
-        "headcount_mismatch_races": sum(horse_counts[k] != n for k,n in expected.items()),
+        "headcount_mismatch_races": sum(horse_counts[k] - nonstarters[k] != n for k,n in expected.items()),
         "invalid_rows": invalid,
     }
 
@@ -63,10 +66,11 @@ def self_test():
             continue
         raise AssertionError("Incomplete specification accepted")
     races = [["レースID", "頭数"], ["a", "2"], ["b", "1"]]
-    runners = [["レースID", "馬番"], ["a", "1"], ["a", "2"], ["b", "1"]]
+    runners = [["レースID", "馬番", "着順"], ["a", "1", "1"], ["a", "2", "中止"], ["b", "1", "1"]]
     clean = audit_ledgers(races, runners)
     assert clean["races"] == 2 and clean["runner_rows"] == 3
     assert not any(v for k,v in clean.items() if k not in ("races", "runner_rows"))
+    assert audit_ledgers(races, runners + [["a", "3", "取消"], ["b", "2", "除外"]])["headcount_mismatch_races"] == 0
     bad = audit_ledgers(races, runners + [["a", "01"], ["c", "1"], ["b", ""]])
     assert bad["duplicate_runner_rows"] == 1 and bad["orphan_runner_rows"] == 1
     assert bad["headcount_mismatch_races"] == 1 and bad["invalid_rows"] == 1
@@ -91,7 +95,7 @@ def main():
     for tab in ("全レース台帳", "全出走馬成績"):
         if read(f"'{tab}'!A1:A1") != [["レースID"]]:
             raise SystemExit("Ledger header check failed")
-    report = audit_ledgers(read("'全レース台帳'!A:P"), read("'全出走馬成績'!A:C"))
+    report = audit_ledgers(read("'全レース台帳'!A:P"), read("'全出走馬成績'!A:K"))
     print(json.dumps(report, sort_keys=True))
     if any(v for k,v in report.items() if k not in ("races", "runner_rows")):
         raise SystemExit("Ledger quality anomalies detected; no writes performed")
