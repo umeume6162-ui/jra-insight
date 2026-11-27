@@ -1,6 +1,7 @@
 """Read-only connectivity and schema check; never log credentials or cell values."""
 import json
 import os
+import re
 from urllib.parse import quote
 
 SPEC_ITEMS = ("目的", "取得", "レース", "出走馬", "コース", "人物・血統", "品質", "優先順", "研究", "自動運用", "開発", "報告")
@@ -524,6 +525,97 @@ def test_prediction_race_coverage():
     return 8
 
 
+def sheet_capture_time(value):
+    """Parse an explicit JST timestamp, preserving its recorded precision."""
+    from datetime import datetime, timedelta
+    if not isinstance(value, str):
+        return None
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}(?::[0-9]{2})? JST", value):
+        value = value.removesuffix(" JST") + "+09:00"
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if stamp.utcoffset() != timedelta(hours=9):
+        return None
+    return stamp.isoformat()
+
+
+
+def jra_past_form_audit(race_id, race_day, roster, expected_count, form_rows, predicted_at, start_at):
+    """Join the official pre-race card to saved historical snapshots by horse ID.
+
+    The roster must come from the official card, with identity already verified.
+    Form rows use the existing 出走馬データ header and contain no horse numbers.
+    """
+    from collections import defaultdict
+    from datetime import date
+
+    if type(expected_count) is not int or not 1 <= expected_count <= 18 or len(roster) != expected_count:
+        return {"state": "HOLD_INCOMPLETE_ROSTER", "entrants": {},
+                "trainingAllowed": False, "publicationAllowed": False}
+    if any(not isinstance(row.get("entrant_id"), str) or not re.fullmatch(r"[0-9]{10}", row["entrant_id"]) for row in roster):
+        return {"state": "HOLD_UNKNOWN_IDENTITY", "entrants": {},
+                "trainingAllowed": False, "publicationAllowed": False}
+    fields = ("馬ID", "対象レースID", "近走日", "着順", "出典URL", "取得日時")
+    if not form_rows or any(form_rows[0].count(field) != 1 for field in fields):
+        raise ValueError("Past-form ledger schema missing or ambiguous")
+    from urllib.parse import urlsplit
+
+    by_id = defaultdict(list)
+    target_day = date.fromisoformat(race_day)
+    prediction, start = map(sheet_capture_time, (predicted_at, start_at))
+    for values in form_rows[1:]:
+        row = dict(zip(form_rows[0], values))
+        if row.get("対象レースID") != race_id or not row.get("着順"):
+            continue
+        try:
+            prior_day = date.fromisoformat(row.get("近走日", ""))
+            sources = [urlsplit(url) for url in (row.get("出典URL") or "").split()]
+        except (TypeError, ValueError):
+            continue
+        if prior_day >= target_day or not sources or any(
+            url.scheme != "https" or url.netloc not in ("www.jra.go.jp", "jra.go.jp") for url in sources
+        ):
+            continue
+        captured = sheet_capture_time(row.get("取得日時"))
+        if not captured or captured[:10] < prior_day.isoformat():
+            continue
+        by_id[row.get("馬ID")].append((prior_day, captured))
+
+    observations = {}
+    for identity in roster:
+        snapshots = by_id[identity["entrant_id"]]
+        eligible = [(day, stamp) for day, stamp in snapshots
+                    if prediction_acquisition_check(stamp, stamp, prediction, start) == "TIME_PASS"]
+        selected = max(eligible or snapshots, default=None)
+        if selected is None:
+            continue
+        prior_day, captured = selected
+        number = identity["entrant_number"]
+        observations[number] = {"past_form": {
+            "identity": identity, "value": prior_day.isoformat(), "phase": "pre_race",
+            "observed_at": captured, "acquired_at": captured}}
+    return prediction_race_coverage(race_id, roster, observations, ["past_form"], prediction, start)
+
+
+def test_jra_past_form_audit():
+    roster = [{"race_id": "2026-11-29-TOKYO-12", "entrant_number": 1, "entrant_id": "2022105102"}]
+    race_id = roster[0]["race_id"]
+    row = ["2022105102", race_id, "2026-11-01", "5", "https://www.jra.go.jp/JRADB/example", "2026-11-27 20:29 JST"]
+    headers = ["馬ID", "対象レースID", "近走日", "着順", "出典URL", "取得日時"]
+
+    def audit(rows, cutoff="2026-11-29 15:00 JST", count=1):
+        return jra_past_form_audit(race_id, "2026-11-29", roster, count, [headers, *rows],
+                                   cutoff, "2026-11-29 15:40 JST")
+
+    assert audit([row])["state"] == "CANDIDATE_ONLY"
+    assert audit([row], count=2)["state"] == "HOLD_INCOMPLETE_ROSTER"
+    assert audit([row], cutoff="2026-11-27 20:00 JST")["entrants"][1]["states"]["past_form"] == "HOLD_AFTER_PREDICTION"
+    assert audit([row[:2] + ["2026-11-29"] + row[3:]])["entrants"][1]["states"]["past_form"] == "HOLD_MISSING"
+    return 4
+
+
 if __name__ == "__main__":
     import sys
     if sys.argv[1:] == ["--self-test"]:
@@ -534,6 +626,7 @@ if __name__ == "__main__":
         print("prediction acquisition cases:", test_prediction_acquisition_check())
         print("prediction coverage cases:", test_prediction_feature_coverage())
         print("prediction race coverage cases:", test_prediction_race_coverage())
+        print("source adapter cases:", test_jra_past_form_audit())
     elif len(sys.argv) == 3 and sys.argv[1] == "--candidate":
         main(sys.argv[2])
     elif len(sys.argv) == 4 and sys.argv[1] == "--official-result":
