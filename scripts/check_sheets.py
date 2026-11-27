@@ -128,6 +128,17 @@ def self_test():
         except ValueError:
             continue
         raise AssertionError("Missing provenance or identity accepted")
+    from jra_result import parse_horse_weight
+    assert parse_horse_weight("454 (初出走)") == ("454", "", True)
+    assert parse_horse_weight("454(0)") == ("454", "0", False)
+    assert parse_horse_weight("454(+4)") == ("454", "+4", False)
+    assert parse_horse_weight("計不") == ("計不", "", False)
+    try:
+        parse_horse_weight("454(不明)")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Unsupported horse weight accepted")
     print("Offline schema tests passed")
 
 def verify_saved_result(races, runners, fetch_candidate):

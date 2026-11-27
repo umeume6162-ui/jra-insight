@@ -79,6 +79,18 @@ def value(element):
     return " ".join(element.text_content().split())
 
 
+def parse_horse_weight(weight_text):
+    """Keep a published weight and distinguish a missing previous weight from zero change."""
+    weight_text = re.sub(r"\s+", "", weight_text)
+    if weight_text in ("", "計不"):
+        return weight_text, "", False
+    match = re.fullmatch(r"(\d+)(?:\(([+-]?\d+|初出走)\))?", weight_text)
+    if not match:
+        raise ValueError("JRA horse weight format is unsupported")
+    first_start = match[2] == "初出走"
+    return match[1], "" if first_start else match[2] or "", first_start
+
+
 def parse_result(document, url, expected_key, retrieved_date):
     token = result_url(url)[9:-3]
     root = html.fromstring(document)
@@ -140,10 +152,7 @@ def parse_result(document, url, expected_key, retrieved_date):
             if not label or label[1] in corner:
                 raise ValueError("JRA corner position could not be read")
             corner[label[1]] = value(position)
-        weight_text = re.sub(r"\s+", "", value(cell("h_weight")))
-        body = re.fullmatch(r"(\d+)(?:\(([+-]?\d+)\))?", weight_text)
-        if weight_text and weight_text != "計不" and not body:
-            raise ValueError("JRA horse weight format is unsupported")
+        body_weight, weight_change, first_start = parse_horse_weight(value(cell("h_weight")))
         runners.append({
             "レースID": key, "馬ID": id_match[1], "馬番": str(horse_number), "枠番": frame[1],
             "馬名": value(name_link), "年齢": age[2], "性別": "せん" if age[1] == "セ" else age[1],
@@ -151,8 +160,9 @@ def parse_result(document, url, expected_key, retrieved_date):
             "着順": finish, "走破時計": value(cell("time")), "着差": value(cell("margin")),
             **{f"{i}角": corner.get(str(i), "") for i in range(1, 5)},
             "上がり3F": value(cell("f_time")), "人気": value(cell("pop")),
-            "馬体重": body[1] if body else weight_text, "増減": (body[2] or "") if body else "",
-            "取得日": retrieved_date, "出典URL": url, "検証状態": "JRA公式結果・掲載馬ID",
+            "馬体重": body_weight, "増減": weight_change,
+            "取得日": retrieved_date, "出典URL": url,
+            "検証状態": "JRA公式結果・掲載馬ID" + ("・馬体重増減は初出走" if first_start else ""),
         })
 
     if not 1 <= len(runners) <= 18 or seen_numbers != set(range(1, len(runners) + 1)):
