@@ -893,10 +893,90 @@ def study_corner_file(path):
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
+def audit_prediction_result(race_id, start_at, expected_count, prediction_rows, result_rows):
+    """Compare the latest saved pre-start marks with a complete official result export."""
+    start = sheet_capture_time(start_at)
+    if start is None or start[:10] != race_id[:10]:
+        return {"state": "HOLD_UNKNOWN_START"}
+    marks_by_time = {}
+    for row in prediction_rows:
+        if row.get("レースID") != race_id:
+            continue
+        stamp = sheet_capture_time(row.get("分析日時"))
+        if prediction_time_check(stamp, stamp, start) == "TIME_PASS":
+            marks_by_time.setdefault(stamp, []).append(row)
+    if not marks_by_time:
+        return {"state": "HOLD_NO_PRE_START_PREDICTION"}
+    from datetime import datetime
+    latest = max(marks_by_time, key=datetime.fromisoformat)
+    selected = marks_by_time[latest]
+
+    from unicodedata import normalize
+
+    result = {}
+    runners = {}
+    starters = 0
+    inactive = {"取消", "除外", "出走取消", "競走除外"}
+    exceptions = inactive | {"中止", "競走中止", "失格"}
+    for row in result_rows:
+        if row.get("レースID") != race_id:
+            continue
+        number, finish = (str(row.get(key, "")).strip() for key in ("馬番", "着順"))
+        if (not re.fullmatch(r"(?:[1-9]|1[0-8])", number) or number in result
+                or not (finish in exceptions or re.fullmatch(r"(?:[1-9]|1[0-8])", finish))):
+            return {"state": "HOLD_RESULT_SCHEMA"}
+        starters += finish not in inactive
+        result[number] = finish
+        runners[number] = normalize("NFKC", str(row.get("馬名") or "")).strip()
+    if not result:
+        return {"state": "HOLD_RESULT_MISSING", "predicted_at": latest}
+    if type(expected_count) is not int or not 1 <= expected_count <= 18 or starters != expected_count:
+        return {"state": "HOLD_INCOMPLETE_ROSTER"}
+    if sorted(int(place) for place in result.values() if place.isdecimal() and int(place) <= 3) != [1, 2, 3]:
+        return {"state": "HOLD_AMBIGUOUS_TOP_THREE"}
+    numbers = [str(row.get("馬番", "")).strip() for row in selected]
+    if len(set(numbers)) != len(numbers) or any(
+        not runners.get(n) or runners[n] != normalize("NFKC", str(row.get("馬名") or "")).strip()
+        for n, row in zip(numbers, selected)
+    ):
+        return {"state": "HOLD_SELECTION_IDENTITY"}
+    marks = [{"number": int(n), "mark": row.get("印"), "finish": result[n]}
+             for n, row in zip(numbers, selected)]
+    return {"state": "CHECKED", "predicted_at": latest, "marks": marks,
+            "marked_top_three": sum(row["finish"] in ("1", "2", "3") for row in marks)}
+
+
+def test_audit_prediction_result():
+    key = "2026-11-28-KYOTO-11"
+    older = {"レースID": key, "分析日時": "2026-11-28 12:00 JST", "馬番": "1", "馬名": "馬1", "印": "◎"}
+    later = dict(older, 分析日時="2026-11-28 15:00 JST", 馬番="2", 馬名="馬2")
+    after = dict(older, 分析日時="2026-11-28 15:40 JST", 馬番="3", 馬名="馬3")
+    rows = [{"レースID": key, "馬番": str(n), "馬名": f"馬{n}", "着順": str(n)} for n in range(1, 4)]
+    rows.append({"レースID": key, "馬番": "4", "着順": "除外"})
+    start = "2026-11-28 15:40 JST"
+    report = audit_prediction_result(key, start, 3, [older, later, after], rows)
+    assert report["marks"] == [{"number": 2, "mark": "◎", "finish": "2"}]
+    assert audit_prediction_result(key, start, 3, [older], [])["state"] == "HOLD_RESULT_MISSING"
+    assert audit_prediction_result(key, start, 3, [after], rows)["state"] == "HOLD_NO_PRE_START_PREDICTION"
+    assert audit_prediction_result(key, start, 3, [later, later], rows)["state"] == "HOLD_SELECTION_IDENTITY"
+    assert audit_prediction_result(key, start, 3, [later], rows[1:])["state"] == "HOLD_INCOMPLETE_ROSTER"
+    assert audit_prediction_result(key, start, 3, [dict(later, 馬名="別馬")], rows)["state"] == "HOLD_SELECTION_IDENTITY"
+    return 6
+
+
+def audit_prediction_result_file(path):
+    with open(path, encoding="utf-8") as stream:
+        data = json.load(stream)
+    report = audit_prediction_result(data["race_id"], data["start_at"], data["expected_count"],
+                                     data["prediction_rows"], data["result_rows"])
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+
+
 if __name__ == "__main__":
     import sys
     if sys.argv[1:] == ["--self-test"]:
         self_test()
+        print("prediction result cases:", test_audit_prediction_result())
         print("corner study cases:", test_corner_position_study())
         print("prediction timestamp cases:", test_prediction_time_check())
         print("prediction identity cases:", test_prediction_identity_check())
@@ -912,6 +992,8 @@ if __name__ == "__main__":
         audit_past_form_file(sys.argv[2])
     elif len(sys.argv) == 3 and sys.argv[1] == "--study-corners":
         study_corner_file(sys.argv[2])
+    elif len(sys.argv) == 3 and sys.argv[1] == "--audit-prediction-result":
+        audit_prediction_result_file(sys.argv[2])
     elif len(sys.argv) == 3 and sys.argv[1] == "--candidate":
         main(sys.argv[2])
     elif len(sys.argv) == 4 and sys.argv[1] == "--official-result":
@@ -925,5 +1007,5 @@ if __name__ == "__main__":
     elif len(sys.argv) == 1:
         main()
     else:
-        raise SystemExit("Usage: check_sheets.py [--self-test | --study-corners FILE | --audit-past-form FILE | --audit-past-form-public FILE | --candidate FILE | --official-result URL RACE_ID | --save-official-result URL RACE_ID | --verify-saved-result | --verify-intake-replay]")
+        raise SystemExit("Usage: check_sheets.py [--self-test | --audit-prediction-result FILE | --study-corners FILE | --audit-past-form FILE | --audit-past-form-public FILE | --candidate FILE | --official-result URL RACE_ID | --save-official-result URL RACE_ID | --verify-saved-result | --verify-intake-replay]")
 
