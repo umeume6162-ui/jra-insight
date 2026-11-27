@@ -130,7 +130,7 @@ def self_test():
         raise AssertionError("Missing provenance or identity accepted")
     print("Offline schema tests passed")
 
-def main(candidate_path=None):
+def main(candidate_path=None, source_url=None, expected_key=None):
     from google.oauth2 import service_account
     from google.auth.transport.requests import AuthorizedSession
     if not all(os.environ.get(x) for x in ("GOOGLE_SERVICE_ACCOUNT_JSON", "JRA_SHEET_ID")):
@@ -151,9 +151,13 @@ def main(candidate_path=None):
             raise SystemExit("Ledger header check failed")
     races = read("'全レース台帳'!A:Z")
     runners = read("'全出走馬成績'!A:AA")
-    if candidate_path:
+    if source_url:
+        from jra_result import candidate_from_url
+        candidate = candidate_from_url(source_url, expected_key, races[0], runners[0])
+    elif candidate_path:
         with open(candidate_path, encoding="utf-8") as handle:
             candidate = json.load(handle)
+    if source_url or candidate_path:
         if not isinstance(candidate, dict) or set(candidate) != {"race", "runners"}:
             raise ValueError("Unexpected candidate file schema")
         print(json.dumps(plan_intake(races, runners, candidate["race"], candidate["runners"]), sort_keys=True))
@@ -170,7 +174,10 @@ if __name__ == "__main__":
         self_test()
     elif len(sys.argv) == 3 and sys.argv[1] == "--candidate":
         main(sys.argv[2])
+    elif len(sys.argv) == 4 and sys.argv[1] == "--official-result":
+        main(source_url=sys.argv[2], expected_key=sys.argv[3])
     elif len(sys.argv) == 1:
         main()
     else:
-        raise SystemExit("Usage: check_sheets.py [--self-test | --candidate FILE]")
+        raise SystemExit("Usage: check_sheets.py [--self-test | --candidate FILE | --official-result URL RACE_ID]")
+

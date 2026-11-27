@@ -1,9 +1,19 @@
 name: JRA read-only Sheets check
 on:
   workflow_dispatch:
+    inputs:
+      result_url:
+        description: 'Official JRA result URL for an optional intake dry-run'
+        type: string
+        required: false
+      race_id:
+        description: 'Expected race key (YYYY-MM-DD-TRACK-RR)'
+        type: string
+        required: false
   push:
     paths:
       - 'scripts/check_sheets.py'
+      - 'scripts/jra_result.py'
       - '.github/workflows/check-sheets.yml'
 permissions:
   contents: read
@@ -16,11 +26,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install google-auth requests
-      - run: python -m py_compile scripts/check_sheets.py
+      - run: pip install google-auth requests lxml
+      - run: python -m py_compile scripts/check_sheets.py scripts/jra_result.py
       - run: python scripts/check_sheets.py --self-test
-      - run: python scripts/check_sheets.py
+      - run: |
+          if [ -n "$JRA_RESULT_URL" ] || [ -n "$JRA_EXPECTED_RACE" ]; then
+            python scripts/check_sheets.py --official-result "$JRA_RESULT_URL" "$JRA_EXPECTED_RACE"
+          else
+            python scripts/check_sheets.py
+          fi
         if: github.event_name == 'workflow_dispatch'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           JRA_SHEET_ID: ${{ secrets.JRA_SHEET_ID }}
+          JRA_RESULT_URL: ${{ inputs.result_url }}
+          JRA_EXPECTED_RACE: ${{ inputs.race_id }}
