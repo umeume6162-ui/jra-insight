@@ -40,9 +40,16 @@ jobs:
       - name: Reconcile one saved result with JRA
         if: >-
           github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-          contains(github.event.head_commit.message, '[verify-jra-source]')
-        run: python scripts/check_sheets.py --verify-saved-result
+          (contains(github.event.head_commit.message, '[verify-jra-source]') ||
+          contains(github.event.head_commit.message, '[verify-jra-replay]'))
+        run: |
+          if [ "$JRA_VERIFY_REPLAY" = true ]; then
+            python scripts/check_sheets.py --verify-intake-replay
+          else
+            python scripts/check_sheets.py --verify-saved-result
+          fi
         env:
+          JRA_VERIFY_REPLAY: ${{ contains(github.event.head_commit.message, '[verify-jra-replay]') }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           JRA_SHEET_ID: ${{ secrets.JRA_SHEET_ID }}
       - run: |

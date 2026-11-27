@@ -141,7 +141,7 @@ def self_test():
         raise AssertionError("Unsupported horse weight accepted")
     print("Offline schema tests passed")
 
-def verify_saved_result(races, runners, fetch_candidate):
+def verify_saved_result(races, runners, fetch_candidate, verify_replay=False):
     """Compare an already saved result with a fresh read of its official source."""
     from jra_result import result_url
 
@@ -186,10 +186,21 @@ def verify_saved_result(races, runners, fetch_candidate):
 
     if runner_rows(saved) != runner_rows(candidate["runners"]):
         raise ValueError("Official result disagrees with the saved runner identities or finishing order")
+    if verify_replay:
+        from save_result import RACE_TAB, RUNNERS_TAB, save_result
+
+        def reject_write(_requests):
+            raise ValueError("Replay verification must not issue a write")
+
+        replay = save_result(candidate, lambda: (races, runners),
+                             {RACE_TAB: 1, RUNNERS_TAB: 2}, reject_write)
+        if not replay["already_saved"] or replay["writes"]:
+            raise ValueError("Replay did not recognize the complete stored race")
+        return {"verified_saved_races": 1, **replay}
     return {"verified_saved_races": 1, "runner_rows": plan["runner_rows"], "writes": 0}
 
 
-def main(candidate_path=None, source_url=None, expected_key=None, verify_saved=False, write=False):
+def main(candidate_path=None, source_url=None, expected_key=None, verify_saved=False, write=False, verify_replay=False):
     from google.oauth2 import service_account
     from google.auth.transport.requests import AuthorizedSession
     from requests import RequestException
@@ -205,7 +216,7 @@ def main(candidate_path=None, source_url=None, expected_key=None, verify_saved=F
     base = "https://sheets.googleapis.com/v4/spreadsheets/" + os.environ["JRA_SHEET_ID"]
     def read(a1):
         response = session.get(base + "/values/" + quote(a1, safe=""),
-                               params={"valueRenderOption": "UNFORMATTED_VALUE"} if write else None,
+                               params={"valueRenderOption": "UNFORMATTED_VALUE"} if write or verify_replay else None,
                                timeout=30)
         if response.status_code != 200:
             raise SystemExit(f"Sheets read failed: HTTP {response.status_code}")
@@ -246,7 +257,7 @@ def main(candidate_path=None, source_url=None, expected_key=None, verify_saved=F
         return
     if verify_saved:
         from jra_result import candidate_from_url
-        print(json.dumps(verify_saved_result(races, runners, candidate_from_url), sort_keys=True))
+        print(json.dumps(verify_saved_result(races, runners, candidate_from_url, verify_replay), sort_keys=True))
         return
     if source_url:
         from jra_result import candidate_from_url
@@ -277,8 +288,10 @@ if __name__ == "__main__":
         main(source_url=sys.argv[2], expected_key=sys.argv[3], write=True)
     elif sys.argv[1:] == ["--verify-saved-result"]:
         main(verify_saved=True)
+    elif sys.argv[1:] == ["--verify-intake-replay"]:
+        main(verify_saved=True, verify_replay=True)
     elif len(sys.argv) == 1:
         main()
     else:
-        raise SystemExit("Usage: check_sheets.py [--self-test | --candidate FILE | --official-result URL RACE_ID | --save-official-result URL RACE_ID | --verify-saved-result]")
+        raise SystemExit("Usage: check_sheets.py [--self-test | --candidate FILE | --official-result URL RACE_ID | --save-official-result URL RACE_ID | --verify-saved-result | --verify-intake-replay]")
 
