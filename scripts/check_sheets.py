@@ -754,8 +754,12 @@ def audit_past_form_file(path, *, public_summary=False):
                 review = report.get("review")
                 if review is None:
                     raise ValueError("Cannot export aggregate counts from an incomplete roster audit")
+                as_of = sheet_capture_time(snapshot["predicted_at"])
+                if as_of is None:
+                    raise ValueError("Public aggregate requires a JST prediction cutoff")
                 reports[key] = {
                     "state": report["state"],
+                    "asOf": as_of,
                     "expectedCount": snapshot["expected_count"],
                     "missingIdCount": len(review.get("verifyHorseId", [])),
                     "missingFormCount": len(review.get("missingLedgerRows", [])),
