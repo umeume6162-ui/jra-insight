@@ -276,6 +276,24 @@ def main(candidate_path=None, source_url=None, expected_key=None, verify_saved=F
         raise SystemExit("Ledger quality anomalies detected; no writes performed")
     print("Specification and ledger structural checks: OK; no writes performed")
 
+
+def prediction_time_check(observed_at, predicted_at, start_at):
+    """Check temporal eligibility only; never grant publication or training approval."""
+    from datetime import datetime, timedelta
+    try:
+        times = [datetime.fromisoformat(v) for v in (observed_at, predicted_at, start_at)]
+        if any(t.utcoffset() != timedelta(hours=9) for t in times):
+            return "HOLD_UNKNOWN_TIME"
+    except (ValueError, TypeError):
+        return "HOLD_UNKNOWN_TIME"
+    observed, predicted, start = times
+    if predicted >= start or observed >= start:
+        return "HOLD_POST_START"
+    if observed > predicted:
+        return "HOLD_AFTER_PREDICTION"
+    return "TIME_PASS"
+
+
 if __name__ == "__main__":
     import sys
     if sys.argv[1:] == ["--self-test"]:
