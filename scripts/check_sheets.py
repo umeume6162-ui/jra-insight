@@ -67,7 +67,7 @@ def plan_intake(races, runners, candidate_race, candidate_runners):
     key = str(candidate_race[ri]).strip()
     if not key or any(str(r[hi]).strip() != key for r in candidate_runners):
         raise ValueError("Mixed race keys")
-    if any(str(r[ri]).strip() == key for r in races[1:]) or any(str(r[hi]).strip() == key for r in runners[1:]):
+    if any(len(r) > ri and str(r[ri]).strip() == key for r in races[1:]) or any(len(r) > hi and str(r[hi]).strip() == key for r in runners[1:]):
         raise ValueError("Existing race or partial race; manual reconciliation required")
     fi = runners[0].index("着順")
     for row in candidate_runners:
@@ -114,6 +114,20 @@ def self_test():
         except ValueError:
             continue
         raise AssertionError("Invalid candidate accepted")
+    assert plan_intake(races + [[]], runners + [[]], ["c", "1"], [["c", "1", "1"]])["writes"] == 0
+    full_races = [["レースID", "頭数", "出典URL", "取得日"]]
+    full_runners = [["レースID", "馬番", "着順", "馬名", "出典URL", "取得日"]]
+    good_race = ["c", "1", "https://example.org/race", "2026-01-01"]
+    good_runner = ["c", "1", "1", "fixture", "https://example.org/race", "2026-01-01"]
+    assert plan_intake(full_races, full_runners, good_race, [good_runner])["runner_rows"] == 1
+    for i in (3, 4, 5):
+        broken = good_runner.copy()
+        broken[i] = ""
+        try:
+            plan_intake(full_races, full_runners, good_race, [broken])
+        except ValueError:
+            continue
+        raise AssertionError("Missing provenance or identity accepted")
     print("Offline schema tests passed")
 
 def main(candidate_path=None):
