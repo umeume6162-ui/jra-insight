@@ -645,6 +645,41 @@ def test_jra_past_form_audit():
     return 9
 
 
+def jra_profile_id(profile_url, card_name, profile_name):
+    """Bind an independently read JRA profile heading to the racecard name."""
+    from unicodedata import normalize
+    from urllib.parse import parse_qs, urlsplit
+
+    if not all(isinstance(value, str) and value.strip()
+               for value in (profile_url, card_name, profile_name)):
+        return None
+    if normalize("NFKC", card_name).strip() != normalize("NFKC", profile_name).strip():
+        return None
+    try:
+        source = urlsplit(profile_url)
+        query = parse_qs(source.query, keep_blank_values=True)
+    except ValueError:
+        return None
+    if (source.scheme != "https" or source.netloc not in ("www.jra.go.jp", "jra.go.jp")
+            or source.path != "/JRADB/accessU.html" or source.fragment
+            or set(query) != {"CNAME"} or len(query["CNAME"]) != 1):
+        return None
+    match = re.fullmatch(r"pw01dud[01]0([0-9]{10})/[A-F0-9]{2}", query["CNAME"][0])
+    return match[1] if match else None
+
+
+def test_jra_profile_id():
+    name = "クロワデュノール"
+    url = "https://www.jra.go.jp/JRADB/accessU.html?CNAME=pw01dud002022105102%2F98"
+    assert jra_profile_id(url, name, name) == "2022105102"
+    assert jra_profile_id(url.replace("dud00", "dud10"), name, name) == "2022105102"
+    assert jra_profile_id(url, name, "別の馬") is None
+    assert jra_profile_id(url.replace("www.jra.go.jp", "example.test"), name, name) is None
+    assert jra_profile_id(url + "&CNAME=another", name, name) is None
+    assert jra_profile_id(url.replace("accessU", "accessD"), name, name) is None
+    return 6
+
+
 if __name__ == "__main__":
     import sys
     if sys.argv[1:] == ["--self-test"]:
@@ -656,6 +691,7 @@ if __name__ == "__main__":
         print("prediction coverage cases:", test_prediction_feature_coverage())
         print("prediction race coverage cases:", test_prediction_race_coverage())
         print("source adapter cases:", test_jra_past_form_audit())
+        print("official profile identity cases:", test_jra_profile_id())
     elif len(sys.argv) == 3 and sys.argv[1] == "--candidate":
         main(sys.argv[2])
     elif len(sys.argv) == 4 and sys.argv[1] == "--official-result":
