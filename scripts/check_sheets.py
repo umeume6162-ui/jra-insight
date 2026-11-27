@@ -1006,10 +1006,66 @@ def test_audit_prediction_result_batch():
     return 4
 
 
+def audit_prediction_ledger_export(data):
+    """Plan reviews from the current prediction, result and review table exports."""
+    from collections import defaultdict
+
+    def table(rows, required):
+        if not rows or any(rows[0].count(name) != 1 for name in required):
+            raise ValueError("Unexpected ledger headers")
+        return [dict(zip(rows[0], row)) for row in rows[1:] if any(row)]
+
+    cards = {}
+    for row in table(data["race_values"], ("レースID", "頭数", "検証状態")):
+        key = row.get("レースID")
+        if not key or key in cards:
+            raise ValueError("Duplicate or missing result race ID")
+        cards[key] = row
+    predictions, runners = defaultdict(list), defaultdict(list)
+    for row in table(data["prediction_values"], ("レースID", "分析日時", "馬番", "馬名", "印")):
+        predictions[row["レースID"]].append(row)
+    for row in table(data["result_values"], ("レースID", "馬番", "馬名", "着順")):
+        runners[row["レースID"]].append(row)
+    existing = table(data["review_values"], ("レースID", "馬番"))
+
+    snapshots = []
+    for key, marks in predictions.items():
+        card = cards.get(key, {})
+        status = str(card.get("検証状態") or "")
+        official = bool(re.match(r"JRA公式(?:結果・掲載全頭確認|(?:結果)?(?:全頭)?確認)", status))
+        official = official and "全" in status and "確認待ち" not in status
+        count = str(card.get("頭数") or "").strip()
+        snapshots.append({
+            "race_id": key, "start_at": data["starts"].get(key),
+            "expected_count": int(count) if official and count.isdecimal() else None,
+            "prediction_rows": marks, "result_rows": runners[key] if official else [],
+        })
+    return audit_prediction_result_batch(snapshots, existing)
+
+
+def test_audit_prediction_ledger_export():
+    key = "2026-11-28-KYOTO-11"
+    data = {
+        "prediction_values": [["レースID", "分析日時", "馬番", "馬名", "印"],
+                              [key, "2026-11-28 14:00 JST", "1", "馬1", "◎"]],
+        "race_values": [["レースID", "頭数", "検証状態"], [key, "3", "JRA公式確認・全3頭収録"]],
+        "result_values": [["レースID", "馬番", "馬名", "着順"],
+                          *[[key, str(n), f"馬{n}", str(n)] for n in range(1, 4)]],
+        "review_values": [["レースID", "馬番"]],
+        "starts": {key: "2026-11-28 15:40 JST"},
+    }
+    assert audit_prediction_ledger_export(data)["reports"][key]["missing_review_numbers"] == [1]
+    data["race_values"][1][-1] = "未照合"
+    assert audit_prediction_ledger_export(data)["counts"] == {"HOLD_RESULT_MISSING": 1}
+    return 2
+
+
 def audit_prediction_result_file(path):
     with open(path, encoding="utf-8") as stream:
         data = json.load(stream)
-    if "snapshots" in data:
+    if "prediction_values" in data:
+        report = audit_prediction_ledger_export(data)
+    elif "snapshots" in data:
         report = audit_prediction_result_batch(data["snapshots"], data.get("existing", []))
     else:
         report = audit_prediction_result(data["race_id"], data["start_at"], data["expected_count"],
@@ -1023,6 +1079,7 @@ if __name__ == "__main__":
         self_test()
         print("prediction result cases:", test_audit_prediction_result())
         print("prediction batch cases:", test_audit_prediction_result_batch())
+        print("prediction ledger cases:", test_audit_prediction_ledger_export())
         print("corner study cases:", test_corner_position_study())
         print("prediction timestamp cases:", test_prediction_time_check())
         print("prediction identity cases:", test_prediction_identity_check())
