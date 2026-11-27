@@ -69,6 +69,11 @@ def plan_intake(races, runners, candidate_race, candidate_runners):
         raise ValueError("Mixed race keys")
     if any(str(r[ri]).strip() == key for r in races[1:]) or any(str(r[hi]).strip() == key for r in runners[1:]):
         raise ValueError("Existing race or partial race; manual reconciliation required")
+    fi = runners[0].index("着順")
+    for row in candidate_runners:
+        finish = str(row[fi]).strip()
+        if not ((finish.isdecimal() and int(finish) > 0) or finish in ("取消", "除外", "出走取消", "競走除外", "中止", "競走中止", "失格")):
+            raise ValueError("Missing or unsupported candidate finish status")
     report = audit_ledgers([races[0], candidate_race], [runners[0], *candidate_runners])
     if any(v for k, v in report.items() if k not in ("races", "runner_rows")):
         raise ValueError("Candidate structural anomalies")
@@ -93,7 +98,7 @@ def self_test():
     assert bad["duplicate_runner_rows"] == 1 and bad["orphan_runner_rows"] == 1
     assert bad["headcount_mismatch_races"] == 1 and bad["invalid_rows"] == 1
     assert plan_intake(races, runners, ["c", "1"], [["c", "1", "1"], ["c", "2", "取消"]]) == {"race_rows": 1, "runner_rows": 2, "writes": 0}
-    for race, horses in ((["a", "1"], [["a", "1", "1"]]), (["c", "2"], [["c", "1", "1"]]), (["c", "1"], [["d", "1", "1"]])):
+    for race, horses in ((["a", "1"], [["a", "1", "1"]]), (["c", "2"], [["c", "1", "1"]]), (["c", "1"], [["d", "1", "1"]]), (["c", "1"], [["c", "1", ""]])):
         try:
             plan_intake(races, runners, race, horses)
         except ValueError:
