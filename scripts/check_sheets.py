@@ -322,6 +322,7 @@ if __name__ == "__main__":
     import sys
     if sys.argv[1:] == ["--self-test"]:
         self_test()
+        print("prediction timestamp cases:", test_prediction_time_check())
     elif len(sys.argv) == 3 and sys.argv[1] == "--candidate":
         main(sys.argv[2])
     elif len(sys.argv) == 4 and sys.argv[1] == "--official-result":
