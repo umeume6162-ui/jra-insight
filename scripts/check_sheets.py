@@ -725,7 +725,7 @@ def test_jra_profile_id():
     return 6
 
 
-def audit_past_form_file(path):
+def audit_past_form_file(path, *, public_summary=False):
     """Read a local export of one or more verified rosters and saved form ledgers."""
     with open(path, encoding="utf-8") as stream:
         data = json.load(stream)
@@ -737,6 +737,8 @@ def audit_past_form_file(path):
             snapshot["predicted_at"], snapshot["start_at"],
         )
 
+    if public_summary and "snapshots" not in data:
+        raise ValueError("Public summaries require a snapshots list with explicit race IDs")
     if "snapshots" in data:
         snapshots = data["snapshots"]
         if not isinstance(snapshots, list) or not snapshots:
@@ -747,8 +749,22 @@ def audit_past_form_file(path):
             if (not re.fullmatch(r"\d{4}-\d{2}-\d{2}-[A-Z]+-(?:0[1-9]|1[0-2])", key)
                     or key[:10] != snapshot["race_day"] or key in reports):
                 raise ValueError("Invalid or duplicate audit race ID")
-            reports[key] = audit(snapshot)
-        output = {"schema": "jra-prediction-audit-list-v1", "reports": reports}
+            report = audit(snapshot)
+            if public_summary:
+                review = report.get("review")
+                if review is None:
+                    raise ValueError("Cannot export aggregate counts from an incomplete roster audit")
+                reports[key] = {
+                    "state": report["state"],
+                    "expectedCount": snapshot["expected_count"],
+                    "missingIdCount": len(review.get("verifyHorseId", [])),
+                    "missingFormCount": len(review.get("missingLedgerRows", [])),
+                    "heldFormCount": len(review.get("reviewHeldForm", [])),
+                }
+            else:
+                reports[key] = report
+        schema = "jra-public-prediction-coverage-v1" if public_summary else "jra-prediction-audit-list-v1"
+        output = {"schema": schema, "reports": reports}
     else:
         output = audit(data)
     print(json.dumps(output, ensure_ascii=False, indent=2))
@@ -766,6 +782,8 @@ if __name__ == "__main__":
         print("prediction race coverage cases:", test_prediction_race_coverage())
         print("source adapter cases:", test_jra_past_form_audit())
         print("official profile identity cases:", test_jra_profile_id())
+    elif len(sys.argv) == 3 and sys.argv[1] == "--audit-past-form-public":
+        audit_past_form_file(sys.argv[2], public_summary=True)
     elif len(sys.argv) == 3 and sys.argv[1] == "--audit-past-form":
         audit_past_form_file(sys.argv[2])
     elif len(sys.argv) == 3 and sys.argv[1] == "--candidate":
@@ -781,5 +799,5 @@ if __name__ == "__main__":
     elif len(sys.argv) == 1:
         main()
     else:
-        raise SystemExit("Usage: check_sheets.py [--self-test | --audit-past-form FILE | --candidate FILE | --official-result URL RACE_ID | --save-official-result URL RACE_ID | --verify-saved-result | --verify-intake-replay]")
+        raise SystemExit("Usage: check_sheets.py [--self-test | --audit-past-form FILE | --audit-past-form-public FILE | --candidate FILE | --official-result URL RACE_ID | --save-official-result URL RACE_ID | --verify-saved-result | --verify-intake-replay]")
 

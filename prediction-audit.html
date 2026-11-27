@@ -13,6 +13,7 @@ dd { margin: 0 0 .75rem; overflow-wrap: anywhere; }
 </style>
 <main>
 <h1>予想前データ確認</h1>
+<p id="audit-source"></p>
 <label for="report">予想前検査の結果ファイル（JSON）</label>
 <input id="report" type="file" accept=".json,application/json">
 <div id="race-picker" hidden>
@@ -57,6 +58,7 @@ const venueNames = {
   TOKYO:"東京", NAKAYAMA:"中山", CHUKYO:"中京", KYOTO:"京都", HANSHIN:"阪神", KOKURA:"小倉"
 };
 let reports = [];
+const source = document.getElementById("audit-source");
 let read = 0;
 
 function validReport(report) {
@@ -70,6 +72,22 @@ function render(report) {
   details.hidden = true;
   output.replaceChildren();
   status.textContent = report ? statuses[report.state] : "";
+  if (report && Object.hasOwn(report, "expectedCount")) {
+    for (const [label, count] of [
+      ["出走予定頭数", report.expectedCount],
+      ["公式馬IDの確認が必要", report.missingIdCount],
+      ["近走台帳に記録なし", report.missingFormCount],
+      ["近走の再確認が必要", report.heldFormCount]
+    ]) {
+      const dt = document.createElement("dt");
+      const dd = document.createElement("dd");
+      dt.textContent = label;
+      dd.textContent = count + "頭";
+      output.append(dt, dd);
+    }
+    details.hidden = false;
+    return;
+  }
   if (!report?.review) return;
   for (const [key, label] of fields) {
     const dt = document.createElement("dt");
@@ -106,11 +124,32 @@ function selectDay() {
   selectVenue();
 }
 
+function showList(data, isPublic) {
+  const entries = Object.entries(data.reports || {});
+  if (!entries.length) throw new Error();
+  reports = entries.map(([key, report]) => {
+    const match = /^(\d{4}-\d{2}-\d{2})-([A-Z]+)-(0[1-9]|1[0-2])$/.exec(key);
+    const validCount = value => Number.isInteger(value) && value >= 0 && value <= report.expectedCount;
+    const publicShape = isPublic && report && Object.hasOwn(statuses, report.state) &&
+      Number.isInteger(report.expectedCount) && report.expectedCount >= 1 && report.expectedCount <= 18 &&
+      [report.missingIdCount, report.missingFormCount, report.heldFormCount].every(validCount) &&
+      report.missingIdCount + report.missingFormCount + report.heldFormCount <= report.expectedCount;
+    if (!match || !Object.hasOwn(venueNames, match[2]) || !(isPublic ? publicShape : validReport(report))) {
+      throw new Error();
+    }
+    return {day:match[1], venue:match[2], race:match[3], report};
+  });
+  options(day, reports.map(row => row.day).sort().reverse());
+  picker.hidden = false;
+  selectDay();
+}
+
 day.addEventListener("change", selectDay);
 venue.addEventListener("change", selectVenue);
 race.addEventListener("change", renderSelection);
 file.addEventListener("change", async () => {
   const token = ++read;
+  source.textContent = "端末内の検査結果";
   reports = [];
   picker.hidden = true;
   render();
@@ -123,16 +162,7 @@ file.addEventListener("change", async () => {
       render(data);
       return;
     }
-    const entries = Object.entries(data.reports || {});
-    if (!entries.length) throw new Error();
-    reports = entries.map(([key, report]) => {
-      const match = /^(\d{4}-\d{2}-\d{2})-([A-Z]+)-(0[1-9]|1[0-2])$/.exec(key);
-      if (!match || !Object.hasOwn(venueNames, match[2]) || !validReport(report)) throw new Error();
-      return {day:match[1], venue:match[2], race:match[3], report};
-    });
-    options(day, reports.map(row => row.day).sort().reverse());
-    picker.hidden = false;
-    selectDay();
+    showList(data, false);
   } catch {
     if (token === read) {
       picker.hidden = true;
@@ -141,5 +171,19 @@ file.addEventListener("change", async () => {
     }
   }
 });
+fetch("./public-prediction-audits.json")
+  .then(response => {
+    if (!response.ok) throw new Error();
+    return response.json();
+  })
+  .then(data => {
+    if (read) return;
+    if (data.schema !== "jra-public-prediction-coverage-v1") throw new Error();
+    showList(data, true);
+    source.textContent = "公開用の保存済み検査集計";
+  })
+  .catch(() => {
+    if (!read) source.textContent = "公開用の検査集計を読み込めませんでした。";
+  });
 </script>
 </html>
