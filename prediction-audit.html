@@ -73,6 +73,7 @@ function render(report) {
   output.replaceChildren();
   status.textContent = report ? statuses[report.state] : "";
   if (report && Object.hasOwn(report, "expectedCount")) {
+    if (report.asOf) status.textContent += " 検査基準 " + report.asOf.slice(0, 16).replace("T", " ") + " JST。";
     for (const [label, count] of [
       ["出走予定頭数", report.expectedCount],
       ["公式馬IDの確認が必要", report.missingIdCount],
@@ -131,6 +132,9 @@ function showList(data, isPublic) {
     const match = /^(\d{4}-\d{2}-\d{2})-([A-Z]+)-(0[1-9]|1[0-2])$/.exec(key);
     const validCount = value => Number.isInteger(value) && value >= 0 && value <= report.expectedCount;
     const publicShape = isPublic && report && Object.hasOwn(statuses, report.state) &&
+      (!Object.hasOwn(report, "asOf") || (typeof report.asOf === "string" &&
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?\+09:00$/.test(report.asOf) &&
+        Number.isFinite(Date.parse(report.asOf)))) &&
       Number.isInteger(report.expectedCount) && report.expectedCount >= 1 && report.expectedCount <= 18 &&
       [report.missingIdCount, report.missingFormCount, report.heldFormCount].every(validCount) &&
       report.missingIdCount + report.missingFormCount + report.heldFormCount <= report.expectedCount;
