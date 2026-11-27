@@ -725,6 +725,18 @@ def test_jra_profile_id():
     return 6
 
 
+def audit_past_form_file(path):
+    """Read a local export of a verified roster and the existing form ledger."""
+    with open(path, encoding="utf-8") as stream:
+        snapshot = json.load(stream)
+    report = jra_past_form_audit(
+        snapshot["race_id"], snapshot["race_day"], snapshot["roster"],
+        snapshot["expected_count"], snapshot["form_rows"],
+        snapshot["predicted_at"], snapshot["start_at"],
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+
+
 if __name__ == "__main__":
     import sys
     if sys.argv[1:] == ["--self-test"]:
@@ -737,6 +749,8 @@ if __name__ == "__main__":
         print("prediction race coverage cases:", test_prediction_race_coverage())
         print("source adapter cases:", test_jra_past_form_audit())
         print("official profile identity cases:", test_jra_profile_id())
+    elif len(sys.argv) == 3 and sys.argv[1] == "--audit-past-form":
+        audit_past_form_file(sys.argv[2])
     elif len(sys.argv) == 3 and sys.argv[1] == "--candidate":
         main(sys.argv[2])
     elif len(sys.argv) == 4 and sys.argv[1] == "--official-result":
@@ -750,5 +764,5 @@ if __name__ == "__main__":
     elif len(sys.argv) == 1:
         main()
     else:
-        raise SystemExit("Usage: check_sheets.py [--self-test | --candidate FILE | --official-result URL RACE_ID | --save-official-result URL RACE_ID | --verify-saved-result | --verify-intake-replay]")
+        raise SystemExit("Usage: check_sheets.py [--self-test | --audit-past-form FILE | --candidate FILE | --official-result URL RACE_ID | --save-official-result URL RACE_ID | --verify-saved-result | --verify-intake-replay]")
 
