@@ -774,11 +774,27 @@ def audit_past_form_file(path, *, public_summary=False):
     print(json.dumps(output, ensure_ascii=False, indent=2))
 
 
-def corner_position_study(races, runners, *, track, surface, distance, going):
+def corner_position_study(races, runners, *, track, surface, distance, going, first3_cutoff=None, race_class=None):
     """Describe final-corner positions in complete races with matching conditions."""
     from collections import Counter, defaultdict
 
+    from decimal import Decimal, InvalidOperation
+
+    def seconds(raw):
+        try:
+            value = Decimal(str(raw))
+        except InvalidOperation:
+            return None
+        return value if value.is_finite() and value > 0 else None
+
+    cutoff = seconds(first3_cutoff)
+    if first3_cutoff is not None and cutoff is None:
+        raise ValueError("Expected a positive front 3F cutoff")
     race_fields = {"レースID", "競馬場", "芝ダート障害", "距離m", "馬場状態", "頭数"}
+    if cutoff is not None:
+        race_fields.add("前半3F")
+    if race_class is not None:
+        race_fields.add("クラス")
     runner_fields = {"レースID", "馬番", "着順", "4角"}
     if not races or not runners or not race_fields.issubset(races[0]) or not runner_fields.issubset(runners[0]):
         raise ValueError("Corner study ledger schema missing")
@@ -787,8 +803,13 @@ def corner_position_study(races, runners, *, track, surface, distance, going):
         row = dict(zip(runners[0], values))
         by_key[row.get("レースID")].append(row)
 
-    counts = {key: Counter(runners=0, wins=0, top_three=0)
-              for key in ("1_to_4", "5_to_8", "9_plus")}
+    def empty_counts():
+        return {key: Counter(runners=0, wins=0, top_three=0)
+                for key in ("1_to_4", "5_to_8", "9_plus")}
+
+    counts = empty_counts()
+    pace = {band: {"race_ids": [], "positions": empty_counts()} for band in ("at_most", "above")}
+    pace_held = []
     included, held, seen = [], {}, set()
     nonstarters = {"取消", "除外", "出走取消", "競走除外"}
     for values in races[1:]:
@@ -796,6 +817,8 @@ def corner_position_study(races, runners, *, track, surface, distance, going):
         if (card.get("競馬場"), card.get("芝ダート障害"), str(card.get("距離m")), card.get("馬場状態")) != (
             track, surface, str(distance), going
         ):
+            continue
+        if race_class is not None and card.get("クラス") != race_class:
             continue
         key = card["レースID"]
         if not key or key in seen:
@@ -816,12 +839,25 @@ def corner_position_study(races, runners, *, track, surface, distance, going):
             held[key] = "finish_or_corner_unusable"
             continue
         included.append(key)
+        targets = [counts]
+        if cutoff is not None:
+            front = seconds(card.get("前半3F"))
+            if front is None:
+                pace_held.append(key)
+            else:
+                bucket = pace["at_most" if front <= cutoff else "above"]
+                bucket["race_ids"].append(key)
+                targets.append(bucket["positions"])
         for finish, corner in zip(map(int, finishes), map(int, corners)):
             band = "1_to_4" if corner <= 4 else "5_to_8" if corner <= 8 else "9_plus"
-            counts[band]["runners"] += 1
-            counts[band]["wins"] += finish == 1
-            counts[band]["top_three"] += finish <= 3
-    return {"race_ids": included, "held": held, "positions": counts}
+            for target in targets:
+                target[band]["runners"] += 1
+                target[band]["wins"] += finish == 1
+                target[band]["top_three"] += finish <= 3
+    report = {"race_ids": included, "held": held, "positions": counts}
+    if cutoff is not None:
+        report["pace"] = {"first3_cutoff": str(cutoff), "groups": pace, "held_race_ids": pace_held}
+    return report
 
 
 def test_corner_position_study():
@@ -838,7 +874,15 @@ def test_corner_position_study():
     assert study(runners[:-2])["held"] == {"race": "incomplete_roster"}
     assert study([*runners, runners[-1]])["held"] == {"race": "incomplete_roster"}
     assert study([*runners[:3], ["race", "3", "3", ""], runners[-1]])["held"] == {"race": "finish_or_corner_unusable"}
-    return 5
+    races[0].extend(["前半3F", "クラス"])
+    races[1].extend(["34.0", "1勝クラス"])
+    options = {"track": "京都", "surface": "芝", "distance": 1200, "going": "良",
+               "first3_cutoff": 34, "race_class": "1勝クラス"}
+    assert corner_position_study(races, runners, **options)["pace"]["groups"]["at_most"]["race_ids"] == ["race"]
+    races[1][-2] = ""
+    assert corner_position_study(races, runners, **options)["pace"]["held_race_ids"] == ["race"]
+    assert not corner_position_study(races, runners, **dict(options, race_class="未勝利"))["race_ids"]
+    return 8
 
 
 def study_corner_file(path):
