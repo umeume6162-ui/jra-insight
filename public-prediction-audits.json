@@ -3,6 +3,7 @@
   "reports": {
     "2026-11-29-TOKYO-12": {
       "state": "HOLD_UNKNOWN_IDENTITY",
+      "asOf": "2026-11-28T03:00:00+09:00",
       "expectedCount": 18,
       "missingIdCount": 6,
       "missingFormCount": 11,
