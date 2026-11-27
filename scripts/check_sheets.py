@@ -130,7 +130,55 @@ def self_test():
         raise AssertionError("Missing provenance or identity accepted")
     print("Offline schema tests passed")
 
-def main(candidate_path=None, source_url=None, expected_key=None):
+def verify_saved_result(races, runners, fetch_candidate):
+    """Compare an already saved result with a fresh read of its official source."""
+    from jra_result import result_url
+
+    race_header, runner_header = races[0], runners[0]
+    race_key = race_header.index("レースID")
+    race_url = race_header.index("出典URL")
+    runner_key = runner_header.index("レースID")
+    horse_id = runner_header.index("馬ID")
+
+    def cell(row, column):
+        return str(row[column] or "").strip() if column < len(row) else ""
+
+    saved_by_race = {}
+    for row in runners[1:]:
+        if cell(row, runner_key):
+            saved_by_race.setdefault(cell(row, runner_key), []).append(row)
+
+    for row in reversed(races[1:]):
+        key = cell(row, race_key)
+        url = cell(row, race_url)
+        saved = saved_by_race.get(key, [])
+        if not saved or not all(cell(runner, horse_id) for runner in saved):
+            continue
+        try:
+            result_url(url)
+        except ValueError:
+            continue
+        break
+    else:
+        raise ValueError("No complete saved JRA result with official horse IDs and a supported URL")
+
+    candidate = fetch_candidate(url, key, race_header, runner_header)
+    plan = plan_intake([race_header], [runner_header], candidate["race"], candidate["runners"])
+    race_fields = [race_header.index(field) for field in ("レースID", "頭数", "勝ち時計")]
+    if any(cell(row, index) != cell(candidate["race"], index) for index in race_fields):
+        raise ValueError("Official result disagrees with the saved race")
+    runner_fields = [runner_header.index(field) for field in ("馬番", "馬ID", "馬名", "着順")]
+
+    def runner_rows(records):
+        return sorted(tuple("".join(cell(record, index).split()) for index in runner_fields)
+                      for record in records)
+
+    if runner_rows(saved) != runner_rows(candidate["runners"]):
+        raise ValueError("Official result disagrees with the saved runner identities or finishing order")
+    return {"verified_saved_races": 1, "runner_rows": plan["runner_rows"], "writes": 0}
+
+
+def main(candidate_path=None, source_url=None, expected_key=None, verify_saved=False):
     from google.oauth2 import service_account
     from google.auth.transport.requests import AuthorizedSession
     if not all(os.environ.get(x) for x in ("GOOGLE_SERVICE_ACCOUNT_JSON", "JRA_SHEET_ID")):
@@ -151,6 +199,10 @@ def main(candidate_path=None, source_url=None, expected_key=None):
             raise SystemExit("Ledger header check failed")
     races = read("'全レース台帳'!A:Z")
     runners = read("'全出走馬成績'!A:AA")
+    if verify_saved:
+        from jra_result import candidate_from_url
+        print(json.dumps(verify_saved_result(races, runners, candidate_from_url), sort_keys=True))
+        return
     if source_url:
         from jra_result import candidate_from_url
         candidate = candidate_from_url(source_url, expected_key, races[0], runners[0])
@@ -176,8 +228,10 @@ if __name__ == "__main__":
         main(sys.argv[2])
     elif len(sys.argv) == 4 and sys.argv[1] == "--official-result":
         main(source_url=sys.argv[2], expected_key=sys.argv[3])
+    elif sys.argv[1:] == ["--verify-saved-result"]:
+        main(verify_saved=True)
     elif len(sys.argv) == 1:
         main()
     else:
-        raise SystemExit("Usage: check_sheets.py [--self-test | --candidate FILE | --official-result URL RACE_ID]")
+        raise SystemExit("Usage: check_sheets.py [--self-test | --candidate FILE | --official-result URL RACE_ID | --verify-saved-result]")
 

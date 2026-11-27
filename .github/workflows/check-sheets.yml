@@ -29,6 +29,14 @@ jobs:
       - run: pip install google-auth requests lxml
       - run: python -m py_compile scripts/check_sheets.py scripts/jra_result.py
       - run: python scripts/check_sheets.py --self-test
+      - name: Reconcile one saved result with JRA
+        if: >-
+          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          contains(github.event.head_commit.message, '[verify-jra-source]')
+        run: python scripts/check_sheets.py --verify-saved-result
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          JRA_SHEET_ID: ${{ secrets.JRA_SHEET_ID }}
       - run: |
           if [ -n "$JRA_RESULT_URL" ] || [ -n "$JRA_EXPECTED_RACE" ]; then
             python scripts/check_sheets.py --official-result "$JRA_RESULT_URL" "$JRA_EXPECTED_RACE"
