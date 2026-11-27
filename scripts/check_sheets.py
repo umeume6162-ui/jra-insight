@@ -74,6 +74,16 @@ def plan_intake(races, runners, candidate_race, candidate_runners):
         finish = str(row[fi]).strip()
         if not ((finish.isdecimal() and int(finish) > 0) or finish in ("取消", "除外", "出走取消", "競走除外", "中止", "競走中止", "失格")):
             raise ValueError("Missing or unsupported candidate finish status")
+    # Full production schemas require provenance and horse identity.
+    for header, records in ((races[0], [candidate_race]), (runners[0], candidate_runners)):
+        for field in ("出典URL", "取得日", "馬名"):
+            if field not in header:
+                continue
+            i = header.index(field)
+            for row in records:
+                value = str(row[i]).strip()
+                if not value or (field == "出典URL" and not value.startswith("https://")):
+                    raise ValueError("Missing candidate provenance or identity")
     report = audit_ledgers([races[0], candidate_race], [runners[0], *candidate_runners])
     if any(v for k, v in report.items() if k not in ("races", "runner_rows")):
         raise ValueError("Candidate structural anomalies")
