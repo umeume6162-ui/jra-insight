@@ -548,7 +548,7 @@ def jra_past_form_audit(race_id, race_day, roster, expected_count, form_rows, pr
     The roster must come from the official card, with identity already verified.
     Form rows use the existing 出走馬データ header and contain no horse numbers.
     """
-    from collections import defaultdict
+    from collections import Counter, defaultdict
     from datetime import date
 
     if type(expected_count) is not int or not 1 <= expected_count <= 18 or len(roster) != expected_count:
@@ -563,42 +563,63 @@ def jra_past_form_audit(race_id, race_day, roster, expected_count, form_rows, pr
     from urllib.parse import urlsplit
 
     by_id = defaultdict(list)
+    matched_rows = Counter()
+    rejected_rows = defaultdict(Counter)
     target_day = date.fromisoformat(race_day)
     prediction, start = map(sheet_capture_time, (predicted_at, start_at))
     for values in form_rows[1:]:
         row = dict(zip(form_rows[0], values))
-        if row.get("対象レースID") != race_id or not row.get("着順"):
+        if row.get("対象レースID") != race_id:
+            continue
+        horse_id = row.get("馬ID")
+        matched_rows[horse_id] += 1
+        if not str(row.get("着順") or "").strip():
+            rejected_rows[horse_id]["HOLD_MISSING_FINISH"] += 1
             continue
         try:
             prior_day = date.fromisoformat(row.get("近走日", ""))
             sources = [urlsplit(url) for url in (row.get("出典URL") or "").split()]
         except (TypeError, ValueError):
+            rejected_rows[horse_id]["HOLD_INVALID_DATE_OR_SOURCE"] += 1
             continue
-        if prior_day >= target_day or not sources or any(
+        if prior_day >= target_day:
+            rejected_rows[horse_id]["HOLD_NON_PRIOR_RACE"] += 1
+            continue
+        if not sources or any(
             url.scheme != "https" or url.netloc not in ("www.jra.go.jp", "jra.go.jp") for url in sources
         ):
+            rejected_rows[horse_id]["HOLD_UNVERIFIED_SOURCE"] += 1
             continue
         captured = sheet_capture_time(row.get("取得日時"))
         if not captured or captured[:10] < prior_day.isoformat():
+            rejected_rows[horse_id]["HOLD_UNKNOWN_OR_INVALID_CAPTURE"] += 1
             continue
-        by_id[row.get("馬ID")].append((prior_day, captured, str(row["着順"]).strip()))
+        by_id[horse_id].append((prior_day, captured, str(row["着順"]).strip()))
 
     observations = {}
     form_counts = {}
     conflicting_days = {}
+    form_evidence = {}
     for identity in roster:
         if identity["entrant_number"] in unknown_ids:
             continue
-        snapshots = by_id[identity["entrant_id"]]
+        horse_id = identity["entrant_id"]
+        snapshots = by_id[horse_id]
         number = identity["entrant_number"]
         finishes_by_day = defaultdict(set)
+        holds = rejected_rows[horse_id].copy()
         for day, stamp, finish in snapshots:
-            if prediction_acquisition_check(stamp, stamp, prediction, start) == "TIME_PASS":
+            timing = prediction_acquisition_check(stamp, stamp, prediction, start)
+            if timing == "TIME_PASS":
                 finishes_by_day[day].add(finish)
+            else:
+                holds[timing] += 1
         conflicting_days[number] = sorted(day.isoformat() for day, finishes in finishes_by_day.items()
                                           if len(finishes) > 1)
         eligible_days = {day for day, finishes in finishes_by_day.items() if len(finishes) == 1}
         form_counts[number] = len(eligible_days)
+        form_evidence[number] = {"ledgerRows": matched_rows[horse_id],
+                                 "eligibleDays": len(eligible_days), "heldRows": dict(holds)}
         eligible = [(day, stamp) for day, stamp, _ in snapshots if day in eligible_days
                     and prediction_acquisition_check(stamp, stamp, prediction, start) == "TIME_PASS"]
         held = [(day, stamp) for day, stamp, _ in snapshots if day not in finishes_by_day]
@@ -615,7 +636,7 @@ def jra_past_form_audit(race_id, race_day, roster, expected_count, form_rows, pr
     if unknown_ids:
         report["state"] = "HOLD_UNKNOWN_IDENTITY"
     return dict(report, rosterCount=expected_count, missingIds=unknown_ids,
-                formCounts=form_counts, conflictingFormDays=conflicting_days)
+                formCounts=form_counts, conflictingFormDays=conflicting_days, formEvidence=form_evidence)
 
 
 def test_jra_past_form_audit():
@@ -642,7 +663,11 @@ def test_jra_past_form_audit():
     assert audit([row, conflict])["conflictingFormDays"] == {1: ["2026-11-01"]}
     assert audit([row, conflict])["state"] == "HOLD_INCOMPLETE_FEATURES"
     assert audit([row, conflict[:5] + ["2026-11-29 15:01 JST"]])["formCounts"] == {1: 1}
-    return 9
+    assert audit([])["formEvidence"][1] == {"ledgerRows": 0, "eligibleDays": 0, "heldRows": {}}
+    unknown_time = row[:5] + ["2026-11-27"]
+    assert audit([unknown_time])["formEvidence"][1]["heldRows"] == {"HOLD_UNKNOWN_OR_INVALID_CAPTURE": 1}
+    assert audit([row], cutoff="2026-11-27 20:00 JST")["formEvidence"][1]["heldRows"] == {"HOLD_AFTER_PREDICTION": 1}
+    return 12
 
 
 def jra_profile_id(profile_url, card_name, profile_name):
