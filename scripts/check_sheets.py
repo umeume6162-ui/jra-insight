@@ -554,9 +554,9 @@ def jra_past_form_audit(race_id, race_day, roster, expected_count, form_rows, pr
     if type(expected_count) is not int or not 1 <= expected_count <= 18 or len(roster) != expected_count:
         return {"state": "HOLD_INCOMPLETE_ROSTER", "entrants": {},
                 "trainingAllowed": False, "publicationAllowed": False}
-    if any(not isinstance(row.get("entrant_id"), str) or not re.fullmatch(r"[0-9]{10}", row["entrant_id"]) for row in roster):
-        return {"state": "HOLD_UNKNOWN_IDENTITY", "entrants": {},
-                "trainingAllowed": False, "publicationAllowed": False}
+    unknown_ids = [row["entrant_number"] for row in roster
+                   if not isinstance(row.get("entrant_id"), str)
+                   or not re.fullmatch(r"[0-9]{10}", row["entrant_id"])]
     fields = ("馬ID", "対象レースID", "近走日", "着順", "出典URL", "取得日時")
     if not form_rows or any(form_rows[0].count(field) != 1 for field in fields):
         raise ValueError("Past-form ledger schema missing or ambiguous")
@@ -585,6 +585,8 @@ def jra_past_form_audit(race_id, race_day, roster, expected_count, form_rows, pr
 
     observations = {}
     for identity in roster:
+        if identity["entrant_number"] in unknown_ids:
+            continue
         snapshots = by_id[identity["entrant_id"]]
         eligible = [(day, stamp) for day, stamp in snapshots
                     if prediction_acquisition_check(stamp, stamp, prediction, start) == "TIME_PASS"]
@@ -596,7 +598,11 @@ def jra_past_form_audit(race_id, race_day, roster, expected_count, form_rows, pr
         observations[number] = {"past_form": {
             "identity": identity, "value": prior_day.isoformat(), "phase": "pre_race",
             "observed_at": captured, "acquired_at": captured}}
-    return prediction_race_coverage(race_id, roster, observations, ["past_form"], prediction, start)
+    known = [row for row in roster if row["entrant_number"] not in unknown_ids]
+    report = prediction_race_coverage(race_id, known, observations, ["past_form"], prediction, start)
+    if unknown_ids:
+        report["state"] = "HOLD_UNKNOWN_IDENTITY"
+    return dict(report, rosterCount=expected_count, missingIds=unknown_ids)
 
 
 def test_jra_past_form_audit():
@@ -613,7 +619,12 @@ def test_jra_past_form_audit():
     assert audit([row], count=2)["state"] == "HOLD_INCOMPLETE_ROSTER"
     assert audit([row], cutoff="2026-11-27 20:00 JST")["entrants"][1]["states"]["past_form"] == "HOLD_AFTER_PREDICTION"
     assert audit([row[:2] + ["2026-11-29"] + row[3:]])["entrants"][1]["states"]["past_form"] == "HOLD_MISSING"
-    return 4
+    partial = jra_past_form_audit(race_id, "2026-11-29",
+                                  [{"race_id": race_id, "entrant_number": 2, "entrant_id": None}, *roster],
+                                  2, [headers, row], "2026-11-29 15:00 JST", "2026-11-29 15:40 JST")
+    assert partial["state"] == "HOLD_UNKNOWN_IDENTITY" and partial["missingIds"] == [2]
+    assert partial["entrants"][1]["states"]["past_form"] == "CANDIDATE_ONLY"
+    return 5
 
 
 if __name__ == "__main__":
