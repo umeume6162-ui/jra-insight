@@ -581,16 +581,28 @@ def jra_past_form_audit(race_id, race_day, roster, expected_count, form_rows, pr
         captured = sheet_capture_time(row.get("取得日時"))
         if not captured or captured[:10] < prior_day.isoformat():
             continue
-        by_id[row.get("馬ID")].append((prior_day, captured))
+        by_id[row.get("馬ID")].append((prior_day, captured, str(row["着順"]).strip()))
 
     observations = {}
+    form_counts = {}
+    conflicting_days = {}
     for identity in roster:
         if identity["entrant_number"] in unknown_ids:
             continue
         snapshots = by_id[identity["entrant_id"]]
-        eligible = [(day, stamp) for day, stamp in snapshots
-                    if prediction_acquisition_check(stamp, stamp, prediction, start) == "TIME_PASS"]
-        selected = max(eligible or snapshots, default=None)
+        number = identity["entrant_number"]
+        finishes_by_day = defaultdict(set)
+        for day, stamp, finish in snapshots:
+            if prediction_acquisition_check(stamp, stamp, prediction, start) == "TIME_PASS":
+                finishes_by_day[day].add(finish)
+        conflicting_days[number] = sorted(day.isoformat() for day, finishes in finishes_by_day.items()
+                                          if len(finishes) > 1)
+        eligible_days = {day for day, finishes in finishes_by_day.items() if len(finishes) == 1}
+        form_counts[number] = len(eligible_days)
+        eligible = [(day, stamp) for day, stamp, _ in snapshots if day in eligible_days
+                    and prediction_acquisition_check(stamp, stamp, prediction, start) == "TIME_PASS"]
+        held = [(day, stamp) for day, stamp, _ in snapshots if day not in finishes_by_day]
+        selected = max(eligible or held, default=None)
         if selected is None:
             continue
         prior_day, captured = selected
@@ -602,7 +614,8 @@ def jra_past_form_audit(race_id, race_day, roster, expected_count, form_rows, pr
     report = prediction_race_coverage(race_id, known, observations, ["past_form"], prediction, start)
     if unknown_ids:
         report["state"] = "HOLD_UNKNOWN_IDENTITY"
-    return dict(report, rosterCount=expected_count, missingIds=unknown_ids)
+    return dict(report, rosterCount=expected_count, missingIds=unknown_ids,
+                formCounts=form_counts, conflictingFormDays=conflicting_days)
 
 
 def test_jra_past_form_audit():
@@ -624,7 +637,12 @@ def test_jra_past_form_audit():
                                   2, [headers, row], "2026-11-29 15:00 JST", "2026-11-29 15:40 JST")
     assert partial["state"] == "HOLD_UNKNOWN_IDENTITY" and partial["missingIds"] == [2]
     assert partial["entrants"][1]["states"]["past_form"] == "CANDIDATE_ONLY"
-    return 5
+    assert audit([row, row])["formCounts"] == {1: 1}
+    conflict = row[:3] + ["2"] + row[4:]
+    assert audit([row, conflict])["conflictingFormDays"] == {1: ["2026-11-01"]}
+    assert audit([row, conflict])["state"] == "HOLD_INCOMPLETE_FEATURES"
+    assert audit([row, conflict[:5] + ["2026-11-29 15:01 JST"]])["formCounts"] == {1: 1}
+    return 9
 
 
 if __name__ == "__main__":
