@@ -56,6 +56,24 @@ def audit_ledgers(races, runners):
         "invalid_rows": invalid,
     }
 
+def plan_intake(races, runners, candidate_race, candidate_runners):
+    """Read-only plan for a complete normalized race; never writes."""
+    if not races or not runners or len(candidate_race) != len(races[0]):
+        raise ValueError("Candidate race schema mismatch")
+    if not candidate_runners or any(len(r) != len(runners[0]) for r in candidate_runners):
+        raise ValueError("Candidate runner schema mismatch")
+    ri = races[0].index("レースID")
+    hi = runners[0].index("レースID")
+    key = str(candidate_race[ri]).strip()
+    if not key or any(str(r[hi]).strip() != key for r in candidate_runners):
+        raise ValueError("Mixed race keys")
+    if any(str(r[ri]).strip() == key for r in races[1:]) or any(str(r[hi]).strip() == key for r in runners[1:]):
+        raise ValueError("Existing race or partial race; manual reconciliation required")
+    report = audit_ledgers([races[0], candidate_race], [runners[0], *candidate_runners])
+    if any(v for k, v in report.items() if k not in ("races", "runner_rows")):
+        raise ValueError("Candidate structural anomalies")
+    return {"race_rows": 1, "runner_rows": report["runner_rows"], "writes": 0}
+
 def self_test():
     rows = [["項目", "現行仕様 test"]] + [[x, "test"] for x in SPEC_ITEMS]
     validate_spec(rows)
@@ -74,6 +92,13 @@ def self_test():
     bad = audit_ledgers(races, runners + [["a", "01"], ["c", "1"], ["b", ""]])
     assert bad["duplicate_runner_rows"] == 1 and bad["orphan_runner_rows"] == 1
     assert bad["headcount_mismatch_races"] == 1 and bad["invalid_rows"] == 1
+    assert plan_intake(races, runners, ["c", "1"], [["c", "1", "1"], ["c", "2", "取消"]]) == {"race_rows": 1, "runner_rows": 2, "writes": 0}
+    for race, horses in ((["a", "1"], [["a", "1", "1"]]), (["c", "2"], [["c", "1", "1"]]), (["c", "1"], [["d", "1", "1"]])):
+        try:
+            plan_intake(races, runners, race, horses)
+        except ValueError:
+            continue
+        raise AssertionError("Invalid candidate accepted")
     print("Offline schema tests passed")
 
 def main():
