@@ -6,7 +6,7 @@
 <style>
 :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
 body { max-width: 40rem; margin: auto; padding: 1rem; line-height: 1.6; }
-input { display: block; max-width: 100%; margin-block: .5rem 1rem; font-size: 1rem; }
+input, select { display: block; max-width: 100%; margin-block: .5rem 1rem; font-size: 1rem; }
 section { border-top: 1px solid currentColor; padding-block: .75rem; }
 dl { margin: 0; }
 dd { margin: 0 0 .75rem; overflow-wrap: anywhere; }
@@ -15,6 +15,14 @@ dd { margin: 0 0 .75rem; overflow-wrap: anywhere; }
 <h1>予想前データ確認</h1>
 <label for="report">予想前検査の結果ファイル（JSON）</label>
 <input id="report" type="file" accept=".json,application/json">
+<div id="race-picker" hidden>
+<label for="day">開催日</label>
+<select id="day"></select>
+<label for="venue">競馬場</label>
+<select id="venue"></select>
+<label for="race">レース</label>
+<select id="race"></select>
+</div>
 <p id="status" role="status"></p>
 <section id="details" aria-label="馬番別の確認項目" hidden>
 <dl id="review"></dl>
@@ -40,33 +48,97 @@ const statuses = {
   HOLD_INCOMPLETE_ROSTER: "予想保留。全頭の出馬表が揃っていません。",
   HOLD_IDENTITY_MISMATCH: "予想保留。出馬表のレースIDまたは馬番を確認してください。"
 };
+const picker = document.getElementById("race-picker");
+const day = document.getElementById("day");
+const venue = document.getElementById("venue");
+const race = document.getElementById("race");
+const venueNames = {
+  SAPPORO:"札幌", HAKODATE:"函館", FUKUSHIMA:"福島", NIIGATA:"新潟",
+  TOKYO:"東京", NAKAYAMA:"中山", CHUKYO:"中京", KYOTO:"京都", HANSHIN:"阪神", KOKURA:"小倉"
+};
+let reports = [];
 let read = 0;
-file.addEventListener("change", async () => {
-  const token = ++read;
+
+function validReport(report) {
+  return Boolean(report && Object.hasOwn(statuses, report.state) &&
+    report.publicationAllowed === false && report.trainingAllowed === false &&
+    (!report.review || fields.every(([key]) => Array.isArray(report.review[key]) &&
+      report.review[key].every(n => Number.isInteger(n) && n >= 1 && n <= 18))));
+}
+
+function render(report) {
   details.hidden = true;
   output.replaceChildren();
-  status.textContent = "";
+  status.textContent = report ? statuses[report.state] : "";
+  if (!report?.review) return;
+  for (const [key, label] of fields) {
+    const dt = document.createElement("dt");
+    const dd = document.createElement("dd");
+    dt.textContent = label;
+    dd.textContent = report.review[key].length ? report.review[key].map(n => n + "番").join("、") : "該当なし";
+    output.append(dt, dd);
+  }
+  details.hidden = false;
+}
+
+function options(select, values, label = value => value) {
+  select.replaceChildren(...[...new Set(values)].map(value => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label(value);
+    return option;
+  }));
+}
+
+function renderSelection() {
+  render(reports.find(row => row.day === day.value && row.venue === venue.value && row.race === race.value)?.report);
+}
+
+function selectVenue() {
+  options(race, reports.filter(row => row.day === day.value && row.venue === venue.value)
+    .map(row => row.race).sort(), value => Number(value) + "R");
+  renderSelection();
+}
+
+function selectDay() {
+  options(venue, reports.filter(row => row.day === day.value).map(row => row.venue),
+    value => venueNames[value] || value);
+  selectVenue();
+}
+
+day.addEventListener("change", selectDay);
+venue.addEventListener("change", selectVenue);
+race.addEventListener("change", renderSelection);
+file.addEventListener("change", async () => {
+  const token = ++read;
+  reports = [];
+  picker.hidden = true;
+  render();
   if (!file.files.length) return;
   try {
-    const report = JSON.parse(await file.files[0].text());
+    const data = JSON.parse(await file.files[0].text());
     if (token !== read) return;
-    if (!report || !Object.hasOwn(statuses, report.state) ||
-        report.publicationAllowed !== false || report.trainingAllowed !== false) throw new Error();
-    const review = report.review;
-    if (review && !fields.every(([key]) => Array.isArray(review[key]) &&
-        review[key].every(n => Number.isInteger(n) && n >= 1 && n <= 18))) throw new Error();
-    status.textContent = statuses[report.state];
-    if (!review) return;
-    for (const [key, label] of fields) {
-      const dt = document.createElement("dt");
-      const dd = document.createElement("dd");
-      dt.textContent = label;
-      dd.textContent = review[key].length ? review[key].map(n => n + "番").join("、") : "該当なし";
-      output.append(dt, dd);
+    if (data?.schema !== "jra-prediction-audit-list-v1") {
+      if (!validReport(data)) throw new Error();
+      render(data);
+      return;
     }
-    details.hidden = false;
+    const entries = Object.entries(data.reports || {});
+    if (!entries.length) throw new Error();
+    reports = entries.map(([key, report]) => {
+      const match = /^(\d{4}-\d{2}-\d{2})-([A-Z]+)-(0[1-9]|1[0-2])$/.exec(key);
+      if (!match || !Object.hasOwn(venueNames, match[2]) || !validReport(report)) throw new Error();
+      return {day:match[1], venue:match[2], race:match[3], report};
+    });
+    options(day, reports.map(row => row.day).sort().reverse());
+    picker.hidden = false;
+    selectDay();
   } catch {
-    if (token === read) status.textContent = "予想前検査の結果ファイルを読み取れませんでした。";
+    if (token === read) {
+      picker.hidden = true;
+      render();
+      status.textContent = "予想前検査の結果ファイルを読み取れませんでした。";
+    }
   }
 });
 </script>
