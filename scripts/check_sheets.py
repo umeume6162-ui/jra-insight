@@ -774,10 +774,86 @@ def audit_past_form_file(path, *, public_summary=False):
     print(json.dumps(output, ensure_ascii=False, indent=2))
 
 
+def corner_position_study(races, runners, *, track, surface, distance, going):
+    """Describe final-corner positions in complete races with matching conditions."""
+    from collections import Counter, defaultdict
+
+    race_fields = {"レースID", "競馬場", "芝ダート障害", "距離m", "馬場状態", "頭数"}
+    runner_fields = {"レースID", "馬番", "着順", "4角"}
+    if not races or not runners or not race_fields.issubset(races[0]) or not runner_fields.issubset(runners[0]):
+        raise ValueError("Corner study ledger schema missing")
+    by_key = defaultdict(list)
+    for values in runners[1:]:
+        row = dict(zip(runners[0], values))
+        by_key[row.get("レースID")].append(row)
+
+    counts = {key: Counter(runners=0, wins=0, top_three=0)
+              for key in ("1_to_4", "5_to_8", "9_plus")}
+    included, held, seen = [], {}, set()
+    nonstarters = {"取消", "除外", "出走取消", "競走除外"}
+    for values in races[1:]:
+        card = dict(zip(races[0], values))
+        if (card.get("競馬場"), card.get("芝ダート障害"), str(card.get("距離m")), card.get("馬場状態")) != (
+            track, surface, str(distance), going
+        ):
+            continue
+        key = card["レースID"]
+        if not key or key in seen:
+            raise ValueError("Duplicate or missing race key")
+        seen.add(key)
+        rows = by_key[key]
+        starters = [row for row in rows if str(row.get("着順", "")).strip() not in nonstarters]
+        numbers = [str(row.get("馬番", "")).strip() for row in rows]
+        if (str(len(starters)) != str(card.get("頭数")) or not starters
+                or any(not n.isdecimal() or int(n) <= 0 for n in numbers)
+                or len({int(n) for n in numbers}) != len(numbers)):
+            held[key] = "incomplete_roster"
+            continue
+        finishes = [str(row.get("着順", "")).strip() for row in starters]
+        corners = [str(row.get("4角", "")).strip() for row in starters]
+        if (any(not n.isdecimal() or int(n) <= 0 for n in finishes + corners)
+                or sorted(int(n) for n in finishes if int(n) <= 3) != [1, 2, 3]):
+            held[key] = "finish_or_corner_unusable"
+            continue
+        included.append(key)
+        for finish, corner in zip(map(int, finishes), map(int, corners)):
+            band = "1_to_4" if corner <= 4 else "5_to_8" if corner <= 8 else "9_plus"
+            counts[band]["runners"] += 1
+            counts[band]["wins"] += finish == 1
+            counts[band]["top_three"] += finish <= 3
+    return {"race_ids": included, "held": held, "positions": counts}
+
+
+def test_corner_position_study():
+    races = [["レースID", "競馬場", "芝ダート障害", "距離m", "馬場状態", "頭数"],
+             ["race", "京都", "芝", "1200", "良", "3"]]
+    runners = [["レースID", "馬番", "着順", "4角"],
+               ["race", "1", "1", "2"], ["race", "2", "2", "5"],
+               ["race", "3", "3", "9"], ["race", "4", "除外", ""]]
+    def study(rows):
+        return corner_position_study(races, rows, track="京都", surface="芝", distance=1200, going="良")
+    report = study(runners)
+    assert report["race_ids"] == ["race"]
+    assert report["positions"]["1_to_4"]["wins"] == 1
+    assert study(runners[:-2])["held"] == {"race": "incomplete_roster"}
+    assert study([*runners, runners[-1]])["held"] == {"race": "incomplete_roster"}
+    assert study([*runners[:3], ["race", "3", "3", ""], runners[-1]])["held"] == {"race": "finish_or_corner_unusable"}
+    return 5
+
+
+def study_corner_file(path):
+    with open(path, encoding="utf-8") as stream:
+        snapshot = json.load(stream)
+    result = corner_position_study(snapshot["races"], snapshot["runners"],
+                                   **snapshot["conditions"])
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 if __name__ == "__main__":
     import sys
     if sys.argv[1:] == ["--self-test"]:
         self_test()
+        print("corner study cases:", test_corner_position_study())
         print("prediction timestamp cases:", test_prediction_time_check())
         print("prediction identity cases:", test_prediction_identity_check())
         print("prediction input cases:", test_prediction_input_check())
@@ -790,6 +866,8 @@ if __name__ == "__main__":
         audit_past_form_file(sys.argv[2], public_summary=True)
     elif len(sys.argv) == 3 and sys.argv[1] == "--audit-past-form":
         audit_past_form_file(sys.argv[2])
+    elif len(sys.argv) == 3 and sys.argv[1] == "--study-corners":
+        study_corner_file(sys.argv[2])
     elif len(sys.argv) == 3 and sys.argv[1] == "--candidate":
         main(sys.argv[2])
     elif len(sys.argv) == 4 and sys.argv[1] == "--official-result":
@@ -803,5 +881,5 @@ if __name__ == "__main__":
     elif len(sys.argv) == 1:
         main()
     else:
-        raise SystemExit("Usage: check_sheets.py [--self-test | --audit-past-form FILE | --audit-past-form-public FILE | --candidate FILE | --official-result URL RACE_ID | --save-official-result URL RACE_ID | --verify-saved-result | --verify-intake-replay]")
+        raise SystemExit("Usage: check_sheets.py [--self-test | --study-corners FILE | --audit-past-form FILE | --audit-past-form-public FILE | --candidate FILE | --official-result URL RACE_ID | --save-official-result URL RACE_ID | --verify-saved-result | --verify-intake-replay]")
 
