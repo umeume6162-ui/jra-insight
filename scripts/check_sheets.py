@@ -106,7 +106,7 @@ def self_test():
         raise AssertionError("Invalid candidate accepted")
     print("Offline schema tests passed")
 
-def main():
+def main(candidate_path=None):
     from google.oauth2 import service_account
     from google.auth.transport.requests import AuthorizedSession
     if not all(os.environ.get(x) for x in ("GOOGLE_SERVICE_ACCOUNT_JSON", "JRA_SHEET_ID")):
@@ -125,7 +125,16 @@ def main():
     for tab in ("全レース台帳", "全出走馬成績"):
         if read(f"'{tab}'!A1:A1") != [["レースID"]]:
             raise SystemExit("Ledger header check failed")
-    report = audit_ledgers(read("'全レース台帳'!A:P"), read("'全出走馬成績'!A:K"))
+    races = read("'全レース台帳'!A:Z")
+    runners = read("'全出走馬成績'!A:AA")
+    if candidate_path:
+        with open(candidate_path, encoding="utf-8") as handle:
+            candidate = json.load(handle)
+        if not isinstance(candidate, dict) or set(candidate) != {"race", "runners"}:
+            raise ValueError("Unexpected candidate file schema")
+        print(json.dumps(plan_intake(races, runners, candidate["race"], candidate["runners"]), sort_keys=True))
+        return
+    report = audit_ledgers(races, runners)
     print(json.dumps(report, sort_keys=True))
     if any(v for k,v in report.items() if k not in ("races", "runner_rows")):
         raise SystemExit("Ledger quality anomalies detected; no writes performed")
@@ -135,5 +144,9 @@ if __name__ == "__main__":
     import sys
     if sys.argv[1:] == ["--self-test"]:
         self_test()
-    else:
+    elif len(sys.argv) == 3 and sys.argv[1] == "--candidate":
+        main(sys.argv[2])
+    elif len(sys.argv) == 1:
         main()
+    else:
+        raise SystemExit("Usage: check_sheets.py [--self-test | --candidate FILE]")
