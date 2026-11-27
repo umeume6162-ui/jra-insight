@@ -1,0 +1,12 @@
+{
+  "schema": "jra-public-prediction-coverage-v1",
+  "reports": {
+    "2026-11-29-TOKYO-12": {
+      "state": "HOLD_UNKNOWN_IDENTITY",
+      "expectedCount": 18,
+      "missingIdCount": 6,
+      "missingFormCount": 11,
+      "heldFormCount": 0
+    }
+  }
+}
