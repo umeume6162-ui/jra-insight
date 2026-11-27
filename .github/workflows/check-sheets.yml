@@ -20,6 +20,12 @@ on:
       - 'scripts/jra_result.py'
       - 'scripts/save_result.py'
       - '.github/workflows/check-sheets.yml'
+  pull_request:
+    paths:
+      - 'scripts/check_sheets.py'
+      - 'scripts/jra_result.py'
+      - 'scripts/save_result.py'
+      - '.github/workflows/check-sheets.yml'
 permissions:
   contents: read
 concurrency:
